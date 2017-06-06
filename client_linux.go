@@ -31,9 +31,9 @@ var _ osClient = &client{}
 // netlink, generic netlink, and nl80211 to provide access to WiFi device
 // actions and statistics.
 type client struct {
-  c               genl
-  familyID        uint16
-  familyVersion   uint8
+	c               genl
+	familyID        uint16
+	familyVersion   uint8
 	groups				  []genetlink.MulticastGroup
 	subscribedgrps	map[string]uint32
 }
@@ -73,9 +73,9 @@ func initClient(c genl) (*client, error) {
 	}
 
 	return &client{
-    c:              c,
-    familyID:       family.ID,
-    familyVersion:  family.Version,
+		c:              c,
+		familyID:       family.ID,
+		familyVersion:  family.Version,
     groups:	        family.Groups,
 		subscribedgrps: make(map[string]uint32),
 	}, nil
