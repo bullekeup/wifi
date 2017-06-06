@@ -34,7 +34,7 @@ type client struct {
 	c               genl
 	familyID        uint16
 	familyVersion   uint8
-	groups				  []genetlink.MulticastGroup
+	groups          []genetlink.MulticastGroup
 	subscribedgrps	map[string]uint32
 }
 
@@ -76,7 +76,7 @@ func initClient(c genl) (*client, error) {
 		c:              c,
 		familyID:       family.ID,
 		familyVersion:  family.Version,
-    groups:	        family.Groups,
+		groups:	        family.Groups,
 		subscribedgrps: make(map[string]uint32),
 	}, nil
 }
