@@ -80,6 +80,8 @@ func (t InterfaceType) String() string {
 		return "station"
 	case InterfaceTypeAP:
 		return "access point"
+	case InterfaceTypeAPVLAN:
+		return "access point w/ VLAN support"
 	case InterfaceTypeWDS:
 		return "wireless distribution"
 	case InterfaceTypeMonitor:
@@ -203,6 +205,20 @@ const (
 	BSSStatusIBSSJoined
 )
 
+// String returns the string representation of a BSSStatus.
+func (s BSSStatus) String() string {
+	switch s {
+	case BSSStatusAuthenticated:
+		return "authenticated"
+	case BSSStatusAssociated:
+		return "associated"
+	case BSSStatusIBSSJoined:
+		return "IBSS joined"
+	default:
+		return fmt.Sprintf("unknown(%d)", s)
+	}
+}
+
 // A ScanResult contains all informations about a successfull scan for available networks
 type ScanResult struct {
 	// Infos about the interface used to perform the scan
@@ -220,18 +236,70 @@ type ScanResult struct {
 	BSSInRange []*BSS
 }
 
-// String returns the string representation of a BSSStatus.
-func (s BSSStatus) String() string {
-	switch s {
-	case BSSStatusAuthenticated:
-		return "authenticated"
-	case BSSStatusAssociated:
-		return "associated"
-	case BSSStatusIBSSJoined:
-		return "IBSS joined"
-	default:
-		return fmt.Sprintf("unknown(%d)", s)
-	}
+//TODO: Use theses structs
+type WiphyFreq struct {
+	Freq uint32
+	MaxTXPow uint32
+	NoIr bool
+	NoIBSS bool
+	PassiveScan bool
+	Radar bool
+	DfsState uint32
+	DfsTime uint32
+	DfsCacTime uint32
+}
+
+type WiphyBitrate struct {
+	Rate float32
+	ShortPreamb bool
+}
+
+//type WiphyBandHTInfo struct {
+//
+//}
+
+//type WiphyBandVHTInfo struct {
+//
+//}
+
+type WiphyBand struct {
+	HTCapa uint16
+	HTAMPDUFactor uint16
+	HTAMPDUDensity uint16
+}
+
+//TODO: Step 1: get protocol features and check for split wiphy feature before dumping av. phys
+//TODO: Have a clean ciphers parsing
+//TODO: Add WoWlan, combinations, HT Capa mask, Feature flags, Ext features, Coalesce rule support
+type Wiphy struct {
+	ID uint32
+	Name string
+	MaxNumScanSSIDs uint8
+	MaxScanIELen uint16
+	MaxNumSchedScanSSIDs uint8
+	MaxMatchSets uint8
+	MaxNumSchedScanPlans uint32
+	MaxScanPlanInterval uint32
+	MaxScanPlanIterations uint32
+	FragThreshold uint32
+	RTSThreshold uint32
+	RetryShort uint8
+	RetryLong uint8
+	CoverageClass uint8
+	Ciphers []string  // Unparsed
+	AntennaAvTX uint32
+	AntennaAvRX uint32
+	AntennaCfTX uint32
+	AntennaCfRX uint32
+	SupportedIfType []InterfaceType
+	SoftwareIfType []InterfaceType
+	SupportedCmds []uint32
+	SupportedTXFrames map[InterfaceType]uint16   // Unparsed
+	SupportedRXFrames map[InterfaceType]uint16   // Unparsed
+	IBSSRSN bool
+	Roaming bool
+	APUAPSD bool
+	TDLS bool
 }
 
 // List of 802.11 Information Element types.

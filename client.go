@@ -55,6 +55,11 @@ func (c *Client) Scan(ifi *Interface) (*ScanResult, error) {
 	return c.c.Scan(ifi)
 }
 
+// Phys retrieve all physical devices available on the system
+func (c *Client) Phys() ([]*Wiphy, error) {
+	return c.c.Phys()
+}
+
 // An osClient is the operating system-specific implementation of Client.
 type osClient interface {
 	Close() error
@@ -62,4 +67,5 @@ type osClient interface {
 	BSS(ifi *Interface) (*BSS, error)
 	StationInfo(ifi *Interface) (*StationInfo, error)
 	Scan(ifi *Interface) (*ScanResult, error)
+	Phys() ([]*Wiphy, error)
 }

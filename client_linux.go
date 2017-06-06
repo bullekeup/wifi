@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 	"unicode/utf8"
+	"fmt"
 
 	"github.com/mdlayher/netlink"
 	"github.com/mdlayher/netlink/genetlink"
@@ -23,6 +24,7 @@ var (
 	errInvalidCommand       = errors.New("invalid generic netlink response command")
 	errInvalidFamilyVersion = errors.New("invalid generic netlink response family version")
 	errInvalidMcastGrp      = errors.New("invalid multicast group")
+	errInvalidAttr          = errors.New("invalid attribute or no attribute to parse")
 )
 
 var _ osClient = &client{}
@@ -295,10 +297,70 @@ func (c *client) Scan(ifi *Interface) (*ScanResult, error) {
 	return results, nil
 }
 
+func (c *client) ProtocolFeatures() (uint32, error) {
+	req := genetlink.Message{
+		Header: genetlink.Header{
+			// From nl80211.h:
+			//  * @NL80211_CMD_GET_PROTOCOL_FEATURES: Get protocol features (uint32), to parse with
+			//  * %NL80211_ATTR_PROTOCOL_FEATURES flag.
+			Command: nl80211.CmdGetProtocolFeatures,
+			Version: c.familyVersion,
+		},
+	}
+
+	flags := netlink.HeaderFlagsRequest
+	msgs, err := c.c.Execute(req, c.familyID, flags)
+	if err != nil {
+		return 0, err
+	}
+	if err := c.checkMessages(msgs, nl80211.CmdGetProtocolFeatures); err != nil {
+		return 0, err
+	}
+
+	return parseProtocolFeatures(msgs)
+}
+
+func (c *client) Phys() ([]*Wiphy, error) {
+	feat, err := c.ProtocolFeatures()
+	if err != nil {
+		fmt.Printf("Can't retrieve protocol features !\n")
+		return nil, err
+	}
+
+	if (feat & nl80211.ProtocolFeatureSplitWiphyDump) == 0 {
+		fmt.Printf("Protocol doesn't have split wiphy dump attr, we currently don't support that.\n")
+		return nil, errInvalidAttr
+	}
+
+	req := genetlink.Message{
+		Header: genetlink.Header{
+			// From nl80211.h:
+			//  * @NL80211_CMD_GET_WIPHY: Get all available physical devices on system
+			Command: nl80211.CmdGetWiphy,
+			Version: c.familyVersion,
+		},
+	}
+
+	flags := netlink.HeaderFlagsRequest | netlink.HeaderFlagsDump
+	msgs, err := c.c.Execute(req, c.familyID, flags)
+	if err != nil {
+		fmt.Printf("Error executing request !\n")
+		return nil, err
+	}
+
+	if err := c.checkMessages(msgs, nl80211.CmdNewWiphy); err != nil {
+		fmt.Printf("Error checking msgs !\n")
+		return nil, err
+	}
+
+	return parseWiphys(msgs)
+}
+
 // checkMessages verifies that response messages from generic netlink contain
 // the command and family version we expect.
 func (c *client) checkMessages(msgs []genetlink.Message, command uint8) error {
 	for _, m := range msgs {
+		//fmt.Printf("Command received: %d\n", m.Header.Command)
 		if m.Header.Command != command {
 			return errInvalidCommand
 		}
@@ -566,6 +628,130 @@ func (info *StationInfo) parseAttributes(attrs []netlink.Attribute) error {
 	}
 
 	return nil
+}
+
+func parseProtocolFeatures(msgs []genetlink.Message) (uint32, error) {
+	for _, m := range msgs {
+		attrs, err := netlink.UnmarshalAttributes(m.Data)
+		if err != nil {
+			return 0, err
+		}
+
+		for _, a := range attrs {
+			switch a.Type {
+			case nl80211.AttrProtocolFeatures:
+				return uint32(nlenc.Uint32(a.Data)), nil
+			}
+		}
+	}
+
+	return 0, errInvalidAttr
+}
+
+func parseWiphys(msgs []genetlink.Message) ([]*Wiphy, error) {
+	var ret []*Wiphy
+	var wiphy *Wiphy = nil
+	neg := -1
+	for _, m := range msgs {
+		attrs, err := netlink.UnmarshalAttributes(m.Data)
+		if err != nil {
+			return nil, err
+		}
+		for _, a := range attrs {
+			switch a.Type {
+			case nl80211.AttrWiphy:
+				phyid := uint32(nlenc.Uint32(a.Data))
+				if wiphy == nil || phyid != wiphy.ID {
+					if wiphy != nil {
+						ret = append(ret, wiphy)
+					}
+					wiphy = &Wiphy{
+						ID : phyid,
+					}
+				}
+			case nl80211.AttrWiphyName:
+				wiphy.Name = nlenc.String(a.Data)
+			case nl80211.AttrMaxNumScanSsids:
+				wiphy.MaxNumScanSSIDs = uint8(nlenc.Uint8(a.Data))
+			case nl80211.AttrMaxScanIeLen:
+				wiphy.MaxScanIELen = uint16(nlenc.Uint16(a.Data))
+			case nl80211.AttrMaxNumSchedScanSsids:
+				wiphy.MaxNumSchedScanSSIDs = uint8(nlenc.Uint8(a.Data))
+			case nl80211.AttrMaxMatchSets:
+				wiphy.MaxMatchSets = uint8(nlenc.Uint8(a.Data))
+			case nl80211.AttrMaxNumSchedScanPlans:
+				wiphy.MaxNumSchedScanPlans = uint32(nlenc.Uint32(a.Data))
+			case nl80211.AttrMaxScanPlanInterval:
+				wiphy.MaxScanPlanInterval = uint32(nlenc.Uint32(a.Data))
+			case nl80211.AttrMaxScanPlanIterations:
+				wiphy.MaxScanPlanIterations = uint32(nlenc.Uint32(a.Data))
+			case nl80211.AttrWiphyFragThreshold:
+				frag := uint32(nlenc.Uint32(a.Data))
+				if frag == uint32(neg) {
+					continue
+				}
+				wiphy.FragThreshold = frag
+			case nl80211.AttrWiphyRtsThreshold:
+				rts := uint32(nlenc.Uint32(a.Data))
+				if rts == uint32(neg) {
+					continue
+				}
+				wiphy.RTSThreshold = rts
+			case nl80211.AttrWiphyRetryShort:
+				wiphy.RetryShort = uint8(nlenc.Uint8(a.Data))
+			case nl80211.AttrWiphyRetryLong:
+				wiphy.RetryLong = uint8(nlenc.Uint8(a.Data))
+			case nl80211.AttrWiphyCoverageClass:
+				wiphy.CoverageClass = uint8(nlenc.Uint8(a.Data))
+			case nl80211.AttrWiphyAntennaAvailTx:
+				wiphy.AntennaAvTX = uint32(nlenc.Uint32(a.Data))
+			case nl80211.AttrWiphyAntennaAvailRx:
+				wiphy.AntennaAvRX = uint32(nlenc.Uint32(a.Data))
+			case nl80211.AttrWiphyAntennaTx:
+				wiphy.AntennaCfTX = uint32(nlenc.Uint32(a.Data))
+			case nl80211.AttrWiphyAntennaRx:
+				wiphy.AntennaCfRX = uint32(nlenc.Uint32(a.Data))
+			case nl80211.AttrSupportedIftypes:
+				attrtypes, err := netlink.UnmarshalAttributes(a.Data)
+				if err != nil {
+					fmt.Printf("Error parsing supported iftypes.\n")
+					continue
+				}
+				for _, attrtype := range attrtypes {
+					wiphy.SupportedIfType = append(wiphy.SupportedIfType, InterfaceType(attrtype.Type))
+				}
+			case nl80211.AttrSoftwareIftypes:
+				attrtypes, err := netlink.UnmarshalAttributes(a.Data)
+				if err != nil {
+					fmt.Printf("Error parsing software iftypes.\n")
+					continue
+				}
+				for _, attrtype := range attrtypes {
+					wiphy.SoftwareIfType = append(wiphy.SupportedIfType, InterfaceType(attrtype.Type))
+				}
+			case nl80211.AttrSupportedCommands:
+				attrcmds, err := netlink.UnmarshalAttributes(a.Data)
+				if err != nil {
+					fmt.Printf("Error parsing supported commands.\n")
+					continue
+				}
+				for _, attrcmd := range attrcmds {
+					wiphy.SupportedCmds = append(wiphy.SupportedCmds, uint32(nlenc.Uint32(attrcmd.Data)))
+				}
+			case nl80211.AttrSupportIbssRsn:
+				wiphy.IBSSRSN = true
+			case nl80211.AttrRoamSupport:
+				wiphy.Roaming = true
+			case nl80211.AttrSupportApUapsd:
+				wiphy.APUAPSD = true
+			case nl80211.AttrTdlsSupport:
+				wiphy.TDLS = true
+			}
+		}
+	}
+	ret = append(ret, wiphy)
+
+	return ret, nil
 }
 
 // rateInfo provides statistics about the receive or transmit rate of
