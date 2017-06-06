@@ -681,7 +681,3 @@ type sysGENL struct {
 func (g *sysGENL) GetFamily(name string) (genetlink.Family, error) {
 	return g.Conn.Family.Get(name)
 }
-
-func (g *sysGENL) JoinGroup(ID uint32) error {
-	return g.Conn.JoinGroup(ID)
-}
