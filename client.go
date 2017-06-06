@@ -50,10 +50,16 @@ func (c *Client) StationInfo(ifi *Interface) (*StationInfo, error) {
 	return c.c.StationInfo(ifi)
 }
 
+// Scan perform an active scan for available wireless networks
+func (c *Client) Scan(ifi *Interface) (*ScanResult, error) {
+	return c.c.Scan(ifi)
+}
+
 // An osClient is the operating system-specific implementation of Client.
 type osClient interface {
 	Close() error
 	Interfaces() ([]*Interface, error)
 	BSS(ifi *Interface) (*BSS, error)
 	StationInfo(ifi *Interface) (*StationInfo, error)
+	Scan(ifi *Interface) (*ScanResult, error)
 }

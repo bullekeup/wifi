@@ -22,6 +22,7 @@ var (
 	errMultipleMessages     = errors.New("expected only one generic netlink message")
 	errInvalidCommand       = errors.New("invalid generic netlink response command")
 	errInvalidFamilyVersion = errors.New("invalid generic netlink response family version")
+	errInvalidMcastGrp      = errors.New("invalid multicast group")
 )
 
 var _ osClient = &client{}
@@ -30,9 +31,11 @@ var _ osClient = &client{}
 // netlink, generic netlink, and nl80211 to provide access to WiFi device
 // actions and statistics.
 type client struct {
-	c             genl
-	familyID      uint16
-	familyVersion uint8
+	c               genl
+	familyID        uint16
+	familyVersion   uint8
+	groups				  []genetlink.MulticastGroup
+	subscribedgrps	map[string]uint32
 }
 
 // genl is an interface over generic netlink, so netlink interactions can
@@ -41,6 +44,10 @@ type genl interface {
 	Close() error
 	GetFamily(name string) (genetlink.Family, error)
 	Execute(m genetlink.Message, family uint16, flags netlink.HeaderFlags) ([]genetlink.Message, error)
+	ExecuteNoSeqCheck(m genetlink.Message, family uint16, flags netlink.HeaderFlags) ([]genetlink.Message, error)
+	JoinGroup(ID uint32) error
+	LeaveGroup(ID uint32) error
+	Receive() ([]genetlink.Message, []netlink.Message, error)
 }
 
 // newClient dials a generic netlink connection and verifies that nl80211
@@ -66,10 +73,37 @@ func initClient(c genl) (*client, error) {
 	}
 
 	return &client{
-		c:             c,
-		familyID:      family.ID,
-		familyVersion: family.Version,
+		c:              c,
+		familyID:       family.ID,
+		familyVersion:  family.Version,
+		groups:				  family.Groups,
+		subscribedgrps: make(map[string]uint32),
 	}, nil
+}
+
+func (c *client) GetGroups() map[string]uint32 {
+	ret := make(map[string]uint32)
+	for _, group := range c.groups {
+		ret[group.Name] = group.ID
+	}
+	return ret
+}
+
+func (c *client) ResolveGroupName(name string) (uint32, error) {
+	for _, group := range c.groups {
+		if name == group.Name {
+			return group.ID, nil
+		}
+	}
+	return 0, errInvalidMcastGrp
+}
+
+func (c *client) JoinGroup(ID uint32) error {
+	return c.c.JoinGroup(ID)
+}
+
+func (c *client) LeaveGroup(ID uint32) error {
+	return c.c.LeaveGroup(ID)
 }
 
 // Close closes the client's generic netlink connection.
@@ -103,6 +137,15 @@ func (c *client) Interfaces() ([]*Interface, error) {
 
 // BSS requests that nl80211 return the BSS for the specified Interface.
 func (c *client) BSS(ifi *Interface) (*BSS, error) {
+	msgs, err := c.BSSNoParse(ifi)
+	if err != nil {
+		return nil, err
+	}
+
+	return parseBSS(msgs)
+}
+
+func (c *client) BSSNoParse(ifi *Interface) ([]genetlink.Message, error) {
 	b, err := netlink.MarshalAttributes(ifi.idAttrs())
 	if err != nil {
 		return nil, err
@@ -128,7 +171,7 @@ func (c *client) BSS(ifi *Interface) (*BSS, error) {
 		return nil, err
 	}
 
-	return parseBSS(msgs)
+	return msgs, nil
 }
 
 // StationInfo requests that nl80211 return station info for the specified
@@ -172,6 +215,84 @@ func (c *client) StationInfo(ifi *Interface) (*StationInfo, error) {
 	}
 
 	return parseStationInfo(msgs[0].Data)
+}
+
+// Scan request a new scan for available networks to the kernel.
+// We must have subscribed to groups sending back scan triggered and results available
+func (c *client) Scan(ifi *Interface) (*ScanResult, error) {
+	grps := make(map[string]uint32)
+	grps["config"] = 0
+	grps["scan"] = 0
+
+	// Subscribe to groups config and scan to be able to retrieve when scan has ended
+	// and results are available
+	for grp, _ := range grps {
+		if _, subsd := c.subscribedgrps[grp]; !subsd {
+			grpid, err := c.ResolveGroupName(grp)
+			grps[grp] = grpid
+			if err != nil {
+				return nil, err
+			}
+			err = c.JoinGroup(grps[grp])
+			if err != nil {
+				return nil, err
+			}
+			defer c.LeaveGroup(grps[grp])
+		}
+	}
+
+	// Send a trigger scan command for the requested interface to the kernel
+	b, err := netlink.MarshalAttributes(ifi.idAttrs())
+	if err != nil {
+		return nil, err
+	}
+
+	req := genetlink.Message{
+		Header: genetlink.Header{
+			// From nl80211h:
+			//  * @NL80211_CMD_TRIGGER_SCAN: trigger a new scan
+			//  * Note that we don't use any options,
+			//  * just perform an active scan for all available networks
+			//  *
+			Command: nl80211.CmdTriggerScan,
+			Version: c.familyVersion,
+		},
+		Data: b,
+	}
+	flags := netlink.HeaderFlagsRequest
+	msgs, err := c.c.ExecuteNoSeqCheck(req, c.familyID, flags)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.checkMessages(msgs, nl80211.CmdTriggerScan); err != nil {
+		return nil, err
+	}
+
+	// Wait for scan results (first response is received as mcast response
+	// and contain scan infos, see parseScan function)
+	for true {
+		msgs, _, err = c.c.Receive()
+		if err != nil {
+			return nil, err
+		}
+		if err := c.checkMessages(msgs, nl80211.CmdNewScanResults); err == nil {
+			break
+		}
+	}
+	results, err := parseScan(msgs)
+
+	// Request BSS results and parse them
+	msgs, err = c.BSSNoParse(ifi)
+	if err != nil {
+		return nil, err
+	}
+
+	bss, err := parseMultipleBSS(msgs)
+	if err != nil {
+		return nil, err
+	}
+	results.BSSInRange = bss
+	return results, nil
 }
 
 // checkMessages verifies that response messages from generic netlink contain
@@ -255,34 +376,63 @@ func (ifi *Interface) parseAttributes(attrs []netlink.Attribute) error {
 // parseBSS parses a single BSS with a status attribute from nl80211 BSS messages.
 func parseBSS(msgs []genetlink.Message) (*BSS, error) {
 	for _, m := range msgs {
-		attrs, err := netlink.UnmarshalAttributes(m.Data)
+		bss, err := parseSingleBSS(m, true)
+		if err != nil {
+			return nil, err
+		}
+		if bss != nil {
+			return bss, nil
+		}
+	}
+
+	return nil, os.ErrNotExist
+}
+
+// parseMultipleBSS parses all BSS found in messages
+func parseMultipleBSS(msgs []genetlink.Message) ([]*BSS, error) {
+	var ret []*BSS
+	for _, m := range msgs {
+		bss, err := parseSingleBSS(m, false)
+		if err != nil {
+			return nil, err
+		}
+		if bss != nil {
+			ret = append(ret, bss)
+		}
+	}
+	return ret, nil
+}
+
+// parseSingleBSS actually do the parsing of each message for
+// parseBSS and parseMultipleBSS
+func parseSingleBSS(msg genetlink.Message, checkstatus bool) (*BSS, error) {
+	attrs, err := netlink.UnmarshalAttributes(msg.Data)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, a := range attrs {
+		if a.Type != nl80211.AttrBss {
+			continue
+		}
+
+		nattrs, err := netlink.UnmarshalAttributes(a.Data)
 		if err != nil {
 			return nil, err
 		}
 
-		for _, a := range attrs {
-			if a.Type != nl80211.AttrBss {
-				continue
-			}
-
-			nattrs, err := netlink.UnmarshalAttributes(a.Data)
-			if err != nil {
-				return nil, err
-			}
-
-			// The BSS which is associated with an interface will have a status
-			// attribute
-			if !attrsContain(nattrs, nl80211.BssStatus) {
-				continue
-			}
-
-			var bss BSS
-			if err := (&bss).parseAttributes(nattrs); err != nil {
-				return nil, err
-			}
-
-			return &bss, nil
+		// The BSS which is associated with an interface will have a status
+		// attribute
+		if checkstatus && !attrsContain(nattrs, nl80211.BssStatus) {
+			return nil, nil
 		}
+
+		var bss BSS
+		if err := (&bss).parseAttributes(nattrs); err != nil {
+			return nil, err
+		}
+
+		return &bss, nil
 	}
 
 	return nil, os.ErrNotExist
@@ -454,6 +604,46 @@ func parseRateInfo(b []byte) (*rateInfo, error) {
 	return &info, nil
 }
 
+func parseScan(msgs []genetlink.Message) (*ScanResult, error) {
+	ret := &ScanResult{}
+
+	for _, m := range msgs {
+		attrs, err := netlink.UnmarshalAttributes(m.Data)
+		if err != nil {
+			return nil, err
+		}
+
+		for _, a := range attrs {
+			switch a.Type {
+			case nl80211.AttrIfindex:
+				ret.IfIndex = uint32(nlenc.Uint32(a.Data))
+			case nl80211.AttrWiphy:
+				ret.Wiphy = uint32(nlenc.Uint32(a.Data))
+			case nl80211.AttrScanFrequencies:
+				nestattrs, err := netlink.UnmarshalAttributes(a.Data)
+				if err != nil {
+					return nil, err
+				}
+				for _, freq := range nestattrs {
+					ret.Frequencies = append(ret.Frequencies, uint32(nlenc.Uint32(freq.Data)))
+				}
+			case nl80211.AttrScanSsids:
+				nestattrs, err := netlink.UnmarshalAttributes(a.Data)
+				if err != nil {
+					return nil, err
+				}
+				for _, ssid := range nestattrs {
+					ret.SSIDs = append(ret.SSIDs, decodeSSID(ssid.Data))
+				}
+			case nl80211.AttrWdev:
+				ret.Wdev = uint64(nlenc.Uint64(a.Data))
+			}
+		}
+	}
+
+	return ret, nil
+}
+
 // attrsContain checks if a slice of netlink attributes contains an attribute
 // with the specified type.
 func attrsContain(attrs []netlink.Attribute, typ uint16) bool {
@@ -490,4 +680,8 @@ type sysGENL struct {
 // GetFamily is a small adapter to make *genetlink.Conn implement genl.
 func (g *sysGENL) GetFamily(name string) (genetlink.Family, error) {
 	return g.Conn.Family.Get(name)
+}
+
+func (g *sysGENL) JoinGroup(ID uint32) error {
+	return g.Conn.JoinGroup(ID)
 }

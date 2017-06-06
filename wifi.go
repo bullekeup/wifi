@@ -203,6 +203,23 @@ const (
 	BSSStatusIBSSJoined
 )
 
+// A ScanResult contains all informations about a successfull scan for available networks
+type ScanResult struct {
+	// Infos about the interface used to perform the scan
+	Wdev uint64
+	IfIndex uint32
+	Wiphy uint32
+
+	// Frequencies found (in MHz)
+	Frequencies []uint32
+
+	// This field is empty, it contains requested SSIDs but we don't use it for now
+	SSIDs []string
+
+	// All networks found
+	BSSInRange []*BSS
+}
+
 // String returns the string representation of a BSSStatus.
 func (s BSSStatus) String() string {
 	switch s {
