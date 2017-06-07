@@ -10,7 +10,6 @@ import (
 	"os"
 	"time"
 	"unicode/utf8"
-	"fmt"
 
 	"github.com/mdlayher/netlink"
 	"github.com/mdlayher/netlink/genetlink"
@@ -323,12 +322,10 @@ func (c *client) ProtocolFeatures() (uint32, error) {
 func (c *client) Phys() ([]*Wiphy, error) {
 	feat, err := c.ProtocolFeatures()
 	if err != nil {
-		fmt.Printf("Can't retrieve protocol features !\n")
 		return nil, err
 	}
 
 	if (feat & nl80211.ProtocolFeatureSplitWiphyDump) == 0 {
-		fmt.Printf("Protocol doesn't have split wiphy dump attr, we currently don't support that.\n")
 		return nil, errInvalidAttr
 	}
 
@@ -344,12 +341,10 @@ func (c *client) Phys() ([]*Wiphy, error) {
 	flags := netlink.HeaderFlagsRequest | netlink.HeaderFlagsDump
 	msgs, err := c.c.Execute(req, c.familyID, flags)
 	if err != nil {
-		fmt.Printf("Error executing request !\n")
 		return nil, err
 	}
 
 	if err := c.checkMessages(msgs, nl80211.CmdNewWiphy); err != nil {
-		fmt.Printf("Error checking msgs !\n")
 		return nil, err
 	}
 
@@ -360,7 +355,6 @@ func (c *client) Phys() ([]*Wiphy, error) {
 // the command and family version we expect.
 func (c *client) checkMessages(msgs []genetlink.Message, command uint8) error {
 	for _, m := range msgs {
-		//fmt.Printf("Command received: %d\n", m.Header.Command)
 		if m.Header.Command != command {
 			return errInvalidCommand
 		}
@@ -651,6 +645,7 @@ func parseProtocolFeatures(msgs []genetlink.Message) (uint32, error) {
 func parseWiphys(msgs []genetlink.Message) ([]*Wiphy, error) {
 	var ret []*Wiphy
 	var wiphy *Wiphy = nil
+	var band *WiphyBand = nil
 	neg := -1
 	for _, m := range msgs {
 		attrs, err := netlink.UnmarshalAttributes(m.Data)
@@ -714,7 +709,6 @@ func parseWiphys(msgs []genetlink.Message) ([]*Wiphy, error) {
 			case nl80211.AttrSupportedIftypes:
 				attrtypes, err := netlink.UnmarshalAttributes(a.Data)
 				if err != nil {
-					fmt.Printf("Error parsing supported iftypes.\n")
 					continue
 				}
 				for _, attrtype := range attrtypes {
@@ -723,7 +717,6 @@ func parseWiphys(msgs []genetlink.Message) ([]*Wiphy, error) {
 			case nl80211.AttrSoftwareIftypes:
 				attrtypes, err := netlink.UnmarshalAttributes(a.Data)
 				if err != nil {
-					fmt.Printf("Error parsing software iftypes.\n")
 					continue
 				}
 				for _, attrtype := range attrtypes {
@@ -732,11 +725,14 @@ func parseWiphys(msgs []genetlink.Message) ([]*Wiphy, error) {
 			case nl80211.AttrSupportedCommands:
 				attrcmds, err := netlink.UnmarshalAttributes(a.Data)
 				if err != nil {
-					fmt.Printf("Error parsing supported commands.\n")
 					continue
 				}
 				for _, attrcmd := range attrcmds {
-					wiphy.SupportedCmds = append(wiphy.SupportedCmds, uint32(nlenc.Uint32(attrcmd.Data)))
+					wiphy.SupportedCmds = append(wiphy.SupportedCmds, WiphyCommand(nlenc.Uint32(attrcmd.Data)))
+				}
+			case nl80211.AttrCipherSuites:
+				for i := 0; i < len(a.Data); i+=4 {
+					wiphy.Ciphers = append(wiphy.Ciphers, CipherSuite(nlenc.Uint32(a.Data[i:i+4])))
 				}
 			case nl80211.AttrSupportIbssRsn:
 				wiphy.IBSSRSN = true
@@ -746,10 +742,61 @@ func parseWiphys(msgs []genetlink.Message) ([]*Wiphy, error) {
 				wiphy.APUAPSD = true
 			case nl80211.AttrTdlsSupport:
 				wiphy.TDLS = true
+			case nl80211.AttrWiphyBands:
+				abands, err := netlink.UnmarshalAttributes(a.Data)
+				if err != nil {
+					continue
+				}
+				for _, aband := range abands {
+					bandid := aband.Type
+					if band == nil || bandid != band.ID {
+						if band != nil {
+							wiphy.Band = append(wiphy.Band, band)
+						}
+						band = &WiphyBand{
+							ID : bandid,
+						}
+					}
+					battrs, err := netlink.UnmarshalAttributes(aband.Data)
+					if err != nil {
+						continue
+					}
+					for _, battr := range battrs {
+						switch battr.Type {
+						case nl80211.BandAttrHtCapa:
+							band.HTCapa = nlenc.Uint16(battr.Data)
+						case nl80211.BandAttrHtAmpduFactor:
+							band.HTAMPDUFactor = nlenc.Uint8(battr.Data)
+						case nl80211.BandAttrHtAmpduDensity:
+							band.HTAMPDUDensity = nlenc.Uint8(battr.Data)
+						case nl80211.BandAttrHtMcsSet:
+							if len(battr.Data) != 16 {
+								continue
+							}
+							band.MCSInfo.MaxRxSuppDataRate = uint32((battr.Data[10] | ((battr.Data[11] & 0x03) <<8)))
+							band.MCSInfo.TxMcsSetDefined = (battr.Data[12] & (1 << 0)) != 0
+							band.MCSInfo.TxMcsSetEqual = (battr.Data[12] & (1 << 1)) == 0
+							band.MCSInfo.TxMaxNumSpatialStreams = uint32(((battr.Data[12] >> 2) & 3) + 1)
+							band.MCSInfo.TxUnequalModulation = (battr.Data[12] & (1 << 4)) != 0
+							band.MCSInfo.RxMcsBitmask = battr.Data[0:10]
+							// We must keep only 76 bits (9.5 bytes)
+							band.MCSInfo.RxMcsBitmask[9] &= 0x0 << 4
+						case nl80211.BandAttrVhtCapa:
+							band.VHTCapa = true
+						case nl80211.BandAttrVhtMcsSet:
+							continue
+						}
+					}
+				}
+				if band != nil {
+					wiphy.Band = append(wiphy.Band, band)
+				}
 			}
 		}
 	}
-	ret = append(ret, wiphy)
+	if wiphy != nil {
+		ret = append(ret, wiphy)
+	}
 
 	return ret, nil
 }
