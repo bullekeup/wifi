@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 	"unicode/utf8"
+	"fmt"
 
 	"github.com/mdlayher/netlink"
 	"github.com/mdlayher/netlink/genetlink"
@@ -48,6 +49,7 @@ type genl interface {
 	ExecuteNoSeqCheck(m genetlink.Message, family uint16, flags netlink.HeaderFlags) ([]genetlink.Message, error)
 	JoinGroup(ID uint32) error
 	LeaveGroup(ID uint32) error
+	Send(m genetlink.Message, family uint16, flags netlink.HeaderFlags) (netlink.Message, error)
 	Receive() ([]genetlink.Message, []netlink.Message, error)
 }
 
@@ -134,6 +136,167 @@ func (c *client) Interfaces() ([]*Interface, error) {
 	}
 
 	return parseInterfaces(msgs)
+}
+
+func (c *client) InterfaceAdd(iftype InterfaceType, ifname string,
+	ifhwaddr []byte, flags *InterfaceFlags, dev WifiDevice) error {
+	var flattrs []netlink.Attribute
+	var flpl []byte
+	var i uint16
+	phy := dev.Phy()
+
+	if flags != nil {
+		for i = 0; i < nl80211.MntrFlagMax; i++ {
+			if flags.Flags[i] {
+				flattrs = append(flattrs, netlink.Attribute{
+					Type: i,
+				})
+			}
+		}
+	}
+	if len(flattrs) > 0 {
+		flb, err := netlink.MarshalAttributes(flattrs)
+		if err != nil {
+			return err
+		}
+		flmsg := netlink.Message{
+			Data : flb,
+		}
+		flpl, err = flmsg.MarshalBinary()
+		if err != nil {
+			return err
+		}
+	}
+
+	attrs := []netlink.Attribute{
+		{
+			Type : nl80211.AttrWiphy,
+			Data : nlenc.Uint32Bytes(uint32(phy)),
+		},
+		{
+			Type : nl80211.AttrIfname,
+			Data : nlenc.Bytes(ifname),
+		},
+		{
+			Type : nl80211.AttrIftype,
+			Data : nlenc.Uint32Bytes(uint32(iftype)),
+		},
+	}
+
+	if len(flpl) > 0 {
+		attrs = append(attrs, netlink.Attribute{
+			Type : nl80211.AttrMntrFlags,
+			Data : flpl,
+		})
+	}
+
+	if len(ifhwaddr) == 6 {
+		attrs = append(attrs, netlink.Attribute{
+			Type : nl80211.AttrMac,
+			Data : ifhwaddr,
+		})
+	}
+
+	b, err := netlink.MarshalAttributes(attrs)
+	if err != nil {
+		return err
+	}
+
+	req := genetlink.Message{
+		Header: genetlink.Header{
+			Command: nl80211.CmdNewInterface,
+			Version: c.familyVersion,
+		},
+		Data : b,
+	}
+
+	nlflags := netlink.HeaderFlagsRequest
+	msgs, err := c.c.Execute(req, c.familyID, nlflags)
+	if err != nil {
+		fmt.Printf("Failed to execute request !\n")
+		return err
+	}
+
+	//TODO: Return the newly created interface, or
+	//handle all interface adding / delete in a dedicated
+	//goroutine listening on multicast events
+	//for _, m := range msgs {
+	//	fmt.Printf("Received \n%v\n", m)
+	//}
+
+	return nil
+}
+
+func (c *client) InterfaceDel(ifi *Interface) error {
+	attrs := []netlink.Attribute{
+		{
+			Type: nl80211.AttrIfindex,
+			Data: nlenc.Uint32Bytes(uint32(ifi.Index)),
+		},
+	}
+	b, err := netlink.MarshalAttributes(attrs)
+	if err != nil {
+		return err
+	}
+
+	req := genetlink.Message{
+		Header: genetlink.Header{
+			Command: nl80211.CmdDelInterface,
+			Version: c.familyVersion,
+		},
+		Data: b,
+	}
+
+	flags := netlink.HeaderFlagsRequest
+	msgs, err := c.c.Execute(req, c.familyID, flags)
+	if err != nil {
+		return err
+	}
+
+	for _, m := range msgs {
+		fmt.Printf("Received \n%v\n", m)
+	}
+
+	return nil
+}
+
+func (c *client) InterfaceMeshJoin(ifi *Interface, string meshID, freq uint32,
+	chanmode string, basicrates []uint8, mcastrate uint32, beaconinterval uint32,
+	dtimperiod uint32, vendorsync bool, meshparams map[string]uint32) error {
+
+	//Warn ! nested attributes (one for each -) :
+	// - vendorsync
+	// - meshparams
+	return nil
+}
+
+func parseAttributesMeshBasic(string meshID, freq uint32,
+	chanmode string, basicrates []uint8, mcastrate uint32, beaconinterval uint32,
+	dtimperiod uint32, vendorsync bool) ([]netlink.Attribute, error) {
+	attrs := []netlink.Attribute{
+		{
+			Type : nl80211.AttrMeshId,
+			Data : nlenc.Bytes(meshID),
+		},
+	}
+
+	if freq != 0 {
+		attrs = append(attrs, netlink.Attribute{
+			Type : nl80211.AttrWiphyFreq,
+			Data : nlenc.Uint32Bytes(freq),
+		})
+	}
+	//TODO: finish parsing theses
+	if chamode != nil {
+		attrs = append(attrs, netlink.Attribute{
+			Type : ,
+			Data : ,
+		})
+	}
+}
+
+func (c *client) InterfaceMeshLeave(ifi *Interface) error {
+	return nil
 }
 
 // BSS requests that nl80211 return the BSS for the specified Interface.
@@ -655,7 +818,7 @@ func parseWiphys(msgs []genetlink.Message) ([]*Wiphy, error) {
 		for _, a := range attrs {
 			switch a.Type {
 			case nl80211.AttrWiphy:
-				phyid := uint32(nlenc.Uint32(a.Data))
+				phyid := int(nlenc.Uint32(a.Data))
 				if wiphy == nil || phyid != wiphy.ID {
 					if wiphy != nil {
 						ret = append(ret, wiphy)
@@ -667,45 +830,45 @@ func parseWiphys(msgs []genetlink.Message) ([]*Wiphy, error) {
 			case nl80211.AttrWiphyName:
 				wiphy.Name = nlenc.String(a.Data)
 			case nl80211.AttrMaxNumScanSsids:
-				wiphy.MaxNumScanSSIDs = uint8(nlenc.Uint8(a.Data))
+				wiphy.MaxNumScanSSIDs = nlenc.Uint8(a.Data)
 			case nl80211.AttrMaxScanIeLen:
-				wiphy.MaxScanIELen = uint16(nlenc.Uint16(a.Data))
+				wiphy.MaxScanIELen = nlenc.Uint16(a.Data)
 			case nl80211.AttrMaxNumSchedScanSsids:
-				wiphy.MaxNumSchedScanSSIDs = uint8(nlenc.Uint8(a.Data))
+				wiphy.MaxNumSchedScanSSIDs = nlenc.Uint8(a.Data)
 			case nl80211.AttrMaxMatchSets:
-				wiphy.MaxMatchSets = uint8(nlenc.Uint8(a.Data))
+				wiphy.MaxMatchSets = nlenc.Uint8(a.Data)
 			case nl80211.AttrMaxNumSchedScanPlans:
-				wiphy.MaxNumSchedScanPlans = uint32(nlenc.Uint32(a.Data))
+				wiphy.MaxNumSchedScanPlans = nlenc.Uint32(a.Data)
 			case nl80211.AttrMaxScanPlanInterval:
-				wiphy.MaxScanPlanInterval = uint32(nlenc.Uint32(a.Data))
+				wiphy.MaxScanPlanInterval = nlenc.Uint32(a.Data)
 			case nl80211.AttrMaxScanPlanIterations:
-				wiphy.MaxScanPlanIterations = uint32(nlenc.Uint32(a.Data))
+				wiphy.MaxScanPlanIterations = nlenc.Uint32(a.Data)
 			case nl80211.AttrWiphyFragThreshold:
-				frag := uint32(nlenc.Uint32(a.Data))
+				frag := nlenc.Uint32(a.Data)
 				if frag == uint32(neg) {
 					continue
 				}
 				wiphy.FragThreshold = frag
 			case nl80211.AttrWiphyRtsThreshold:
-				rts := uint32(nlenc.Uint32(a.Data))
+				rts := nlenc.Uint32(a.Data)
 				if rts == uint32(neg) {
 					continue
 				}
 				wiphy.RTSThreshold = rts
 			case nl80211.AttrWiphyRetryShort:
-				wiphy.RetryShort = uint8(nlenc.Uint8(a.Data))
+				wiphy.RetryShort = nlenc.Uint8(a.Data)
 			case nl80211.AttrWiphyRetryLong:
-				wiphy.RetryLong = uint8(nlenc.Uint8(a.Data))
+				wiphy.RetryLong = nlenc.Uint8(a.Data)
 			case nl80211.AttrWiphyCoverageClass:
-				wiphy.CoverageClass = uint8(nlenc.Uint8(a.Data))
+				wiphy.CoverageClass = nlenc.Uint8(a.Data)
 			case nl80211.AttrWiphyAntennaAvailTx:
-				wiphy.AntennaAvTX = uint32(nlenc.Uint32(a.Data))
+				wiphy.AntennaAvTX = nlenc.Uint32(a.Data)
 			case nl80211.AttrWiphyAntennaAvailRx:
-				wiphy.AntennaAvRX = uint32(nlenc.Uint32(a.Data))
+				wiphy.AntennaAvRX = nlenc.Uint32(a.Data)
 			case nl80211.AttrWiphyAntennaTx:
-				wiphy.AntennaCfTX = uint32(nlenc.Uint32(a.Data))
+				wiphy.AntennaCfTX = nlenc.Uint32(a.Data)
 			case nl80211.AttrWiphyAntennaRx:
-				wiphy.AntennaCfRX = uint32(nlenc.Uint32(a.Data))
+				wiphy.AntennaCfRX = nlenc.Uint32(a.Data)
 			case nl80211.AttrSupportedIftypes:
 				attrtypes, err := netlink.UnmarshalAttributes(a.Data)
 				if err != nil {
@@ -913,4 +1076,20 @@ type sysGENL struct {
 // GetFamily is a small adapter to make *genetlink.Conn implement genl.
 func (g *sysGENL) GetFamily(name string) (genetlink.Family, error) {
 	return g.Conn.Family.Get(name)
+}
+
+func (fl InterfaceFlags) Set(flag int) error {
+	if flag < 0 || flag > nl80211.MntrFlagMax {
+		return errInvalidIfFlag
+	}
+	fl.Flags[flag] = true
+	return nil
+}
+
+func (fl InterfaceFlags) Clear(flag int) error {
+	if flag < 0 || flag > nl80211.MntrFlagMax {
+		return errInvalidIfFlag
+	}
+	fl.Flags[flag] = false
+	return nil
 }

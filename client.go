@@ -60,6 +60,15 @@ func (c *Client) Phys() ([]*Wiphy, error) {
 	return c.c.Phys()
 }
 
+func (c *Client) InterfaceAdd(iftype InterfaceType, ifname string,
+	ifhwaddr []byte, flags *InterfaceFlags, dev WifiDevice) error {
+	return c.c.InterfaceAdd(iftype, ifname, ifhwaddr, flags, dev)
+}
+
+func (c *Client) InterfaceDel(ifi *Interface) error {
+	return c.c.InterfaceDel(ifi)
+}
+
 // An osClient is the operating system-specific implementation of Client.
 type osClient interface {
 	Close() error
@@ -68,4 +77,7 @@ type osClient interface {
 	StationInfo(ifi *Interface) (*StationInfo, error)
 	Scan(ifi *Interface) (*ScanResult, error)
 	Phys() ([]*Wiphy, error)
+	InterfaceAdd(iftype InterfaceType, ifname string,
+		ifhwaddr []byte, flags *InterfaceFlags, dev WifiDevice) error
+	InterfaceDel(ifi *Interface) error
 }

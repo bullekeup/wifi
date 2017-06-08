@@ -76,7 +76,7 @@ func (c WiphyCommand) String() string {
   case nl80211.CmdNewStation:
     return "new_station"
 	default:
-		return fmt.Sprintf("unknown (%d)", c)
+		return fmt.Sprintf("unknown cmd (%d)", c)
 	}
 }
 
@@ -132,7 +132,7 @@ type WiphyBand struct {
 
 //TODO: Add WoWlan, combinations, HT - VHT, Feature flags, Ext features, Coalesce rule support
 type Wiphy struct {
-	ID uint32
+	ID int
 	Name string
 	MaxNumScanSSIDs uint8
 	MaxScanIELen uint16
@@ -161,4 +161,12 @@ type Wiphy struct {
 	APUAPSD bool
 	TDLS bool
   Band []*WiphyBand
+}
+
+func (phy *Wiphy) Phy() int {
+	return phy.ID
+}
+
+type WifiDevice interface {
+	Phy() int
 }

@@ -10,6 +10,7 @@ import (
 var (
 	// errInvalidIE is returned when one or more IEs are malformed.
 	errInvalidIE = errors.New("invalid 802.11 information element")
+	errInvalidIfFlag = errors.New("invalid interface flag")
 )
 
 // An InterfaceType is the operating mode of an Interface.
@@ -103,6 +104,18 @@ func (t InterfaceType) String() string {
 	}
 }
 
+type InterfaceFlag int
+
+const (
+	InterfaceFlagInvalid = iota
+	InterfaceFlagFcsfail
+	InterfaceFlagPlcpfail
+	InterfaceFlagControl
+	InterfaceFlagOtherBss
+	InterfaceFlagCookFrames
+	InterfaceFlagActive
+)
+
 // An Interface is a WiFi network interface.
 type Interface struct {
 	// The index of the interface.
@@ -125,6 +138,14 @@ type Interface struct {
 
 	// The interface's wireless frequency in MHz.
 	Frequency int
+}
+
+func (netif *Interface) Phy() int {
+	return netif.PHY
+}
+
+type InterfaceFlags struct {
+	Flags [6]bool
 }
 
 // StationInfo contains statistics about a WiFi interface operating in
