@@ -13,14 +13,14 @@ var (
 )
 
 type MeshBasicInfo struct {
-  meshID string
-  freq uint32
-	chanmode string
-  basicrates []uint8
-  mcastrate uint32
-  beaconinterval uint32
-	dtimperiod uint32
-  vendorsync bool
+  MeshID string
+  Freq uint32
+	Chanmode string
+  Basicrates []uint8
+  Mcastrate uint32
+  Beaconinterval uint32
+	Dtimperiod uint32
+  Vendorsync bool
 }
 
 type MeshParamDescr struct {
@@ -171,8 +171,18 @@ type ChanMode struct {
 }
 
 var (
-  neg = 10
+  neg = -10
   chanModes = map[string]ChanMode{
+    "5MHz" : {
+      Width : nl80211.ChanWidth5,
+      Freq1Diff : 0,
+      ChanType : -1,
+    },
+    "10MHz" : {
+      Width : nl80211.ChanWidth10,
+      Freq1Diff : 0,
+      ChanType : -1,
+    },
     "HT20" : {
       Width : nl80211.ChanWidth20,
       Freq1Diff : 0,

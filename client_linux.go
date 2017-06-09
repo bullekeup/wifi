@@ -25,6 +25,7 @@ var (
 	errInvalidFamilyVersion = errors.New("invalid generic netlink response family version")
 	errInvalidMcastGrp      = errors.New("invalid multicast group")
 	errInvalidAttr          = errors.New("invalid attribute or no attribute to parse")
+	errInvalidIfType        = errors.New("invalid interface type")
 )
 
 var _ osClient = &client{}
@@ -172,11 +173,17 @@ func (c *client) Execute(attrs []netlink.Attribute, cmd WiphyCommand) ([]genetli
 		var msgs []genetlink.Message
 		if len(cmd.McastGroups) > 0 {
 			msgs, err = c.c.ExecuteNoSeqCheck(req, c.familyID, cmd.Flags)
+			if cmd.Cmd == nl80211.CmdJoinMesh {
+				fmt.Printf("Received command after join mesh: %s", cmd.String())
+			}
 			if err != nil {
 				return nil, err
 			}
 		} else {
 			msgs, err = c.c.Execute(req, c.familyID, cmd.Flags)
+			if cmd.Cmd == nl80211.CmdJoinMesh {
+				fmt.Printf("Received command after join mesh: %s", cmd.String())
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -192,6 +199,11 @@ func (c *client) Execute(attrs []netlink.Attribute, cmd WiphyCommand) ([]genetli
 		}
 		return msgs, nil
 	} else {
+		// FIXME ! When NoResponse is set for cmds the kernel doesn't respond to normally but
+		// may actually respond if an error is detected.
+		// Unfortunately we can't detect it for now as the Receive() function is blocking
+		// and changing it requires to much time for now...
+		// So be positive and just expect things to go well :/
 		_, err := c.c.Send(req, c.familyID, cmd.Flags)
 		return nil, err
 	}
@@ -331,9 +343,15 @@ func (c *client) InterfaceDel(ifi *Interface) error {
 
 func (c *client) InterfaceMeshJoin(ifi *Interface, minfos *MeshBasicInfo,
 	meshparams map[string]uint32) error {
+
+	if ifi.Type != InterfaceTypeMeshPoint {
+		return errInvalidIfType
+	}
+
 	cmd := WiphyCommand{
 		Cmd : nl80211.CmdJoinMesh,
 		Flags : netlink.HeaderFlagsRequest,
+		NoResponse : true,
 	}
 
 	// First attribute : netdev index
@@ -346,11 +364,14 @@ func (c *client) InterfaceMeshJoin(ifi *Interface, minfos *MeshBasicInfo,
 
 	mbasica, err := attrMeshBasic(minfos)
 	if err != nil {
+		fmt.Printf("Failed to get mesh basic attrs\n")
 		return err
 	}
 	attrs = append(attrs, mbasica...)
+	fmt.Printf("Adding basic mesh infos: %v\n", mbasica)
 
 	if len(meshparams) > 0 {
+		fmt.Printf("Parsing mesh parameters...\n")
 		mparamsa, err := attrMeshParams(meshparams)
 		if err != nil {
 			return err
@@ -374,60 +395,45 @@ func attrMeshBasic(minfos *MeshBasicInfo) ([]netlink.Attribute, error) {
 	attrs := []netlink.Attribute{
 		{
 			Type : nl80211.AttrMeshId,
-			Data : nlenc.Bytes(minfos.meshID),
+			Data : nlenc.Bytes(minfos.MeshID),
 		},
 	}
 
-	if minfos.freq != 0 {
+	if minfos.Freq != 0 {
 		attrs = append(attrs, netlink.Attribute{
 			Type : nl80211.AttrWiphyFreq,
-			Data : nlenc.Uint32Bytes(minfos.freq),
+			Data : nlenc.Uint32Bytes(minfos.Freq),
 		})
 	}
-	if minfos.chanmode != "" {
-		achan, err := ChanModeAttrs(minfos.chanmode)
+	if minfos.Chanmode != "" {
+		achan, err := ChanModeAttrs(minfos.Chanmode)
 		if err != nil {
+			fmt.Printf("Failed to get chan mode attrs !\n")
 			return nil, err
 		}
 		attrs = append(attrs, achan...)
 	}
-	if len(minfos.basicrates) > 0 {
-		arates, err := BasicRatesAttr(minfos.basicrates)
+	if len(minfos.Basicrates) > 0 {
+		arates, err := BasicRatesAttr(minfos.Basicrates)
 		if err != nil {
+			fmt.Printf("Failed to get basic rates !\n")
 			return nil, err
 		}
 		attrs = append(attrs, arates)
 	}
-	if minfos.mcastrate > 0 {
+	if minfos.Mcastrate > 0 {
 		attrs = append(attrs, netlink.Attribute{
 			Type : nl80211.AttrBeaconInterval,
-			Data : nlenc.Uint32Bytes(minfos.mcastrate),
+			Data : nlenc.Uint32Bytes(minfos.Mcastrate),
 		})
 	}
-	if minfos.dtimperiod > 0 {
+	if minfos.Dtimperiod > 0 {
 		attrs = append(attrs, netlink.Attribute{
 			Type : nl80211.AttrDtimPeriod,
-			Data : nlenc.Uint32Bytes(minfos.dtimperiod),
+			Data : nlenc.Uint32Bytes(minfos.Dtimperiod),
 		})
 	}
 
-	// Vendor sync nested attribute
-	vattr := netlink.Attribute{}
-	vattr.Type = nl80211.MeshSetupEnableVendorSync
-	if minfos.vendorsync {
-		vattr.Data = []byte{0x1}
-	} else {
-		vattr.Data = []byte{0x0}
-	}
-	bvattr, err := vattr.MarshalBinary()
-	if err != nil {
-		return nil, err
-	}
-	attrs = append(attrs, netlink.Attribute{
-		Type : nl80211.AttrMeshSetup,
-		Nested : true,
-		Data : bvattr,
-	})
 	return attrs, nil
 }
 
@@ -452,6 +458,11 @@ func attrMeshParams(mparams map[string]uint32) (netlink.Attribute, error) {
 }
 
 func (c *client) InterfaceMeshLeave(ifi *Interface) error {
+
+	if ifi.Type != InterfaceTypeMeshPoint {
+		return errInvalidIfType
+	}
+
 	cmd := WiphyCommand{
 		Cmd : nl80211.CmdLeaveMesh,
 		Flags : netlink.HeaderFlagsRequest,
@@ -467,6 +478,45 @@ func (c *client) InterfaceMeshLeave(ifi *Interface) error {
 	}
 
 	return nil
+}
+
+// TODO: Parse config used
+func (c *client) InterfaceMeshGetConfig(ifi *Interface) error {
+	if ifi.Type != InterfaceTypeMeshPoint {
+		return errInvalidIfType
+	}
+
+	cmd := WiphyCommand{
+		Cmd : nl80211.CmdGetMeshConfig,
+		Flags : netlink.HeaderFlagsRequest,
+	}
+
+	msgs, err := c.Execute(ifi.idAttrs(), cmd)
+	if err != nil {
+		return err
+	}
+
+	for _, m := range msgs {
+		fmt.Printf("\n\nNew mesh config response \n")
+		fmt.Printf("  * Command : %d\n", m.Header.Command)
+		fmt.Printf("  * Attributes :\n")
+		attrs, err := netlink.UnmarshalAttributes(m.Data)
+		if err != nil {
+			continue
+		}
+		for _, attr := range attrs {
+			fmt.Printf("  * *\n")
+			fmt.Printf("  * * Type:    %d\n", attr.Type)
+			fmt.Printf("  * * Length:  %d\n", attr.Length)
+			fmt.Printf("  * * Data:    %v\n", attr.Data)
+		}
+	}
+
+	return nil
+}
+
+func (c *client) InterfaceMeshGetParams(ifi *Interface) error {
+	return c.InterfaceMeshGetConfig(ifi)
 }
 
 // BSS requests that nl80211 return the BSS for the specified Interface.

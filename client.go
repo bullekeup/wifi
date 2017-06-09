@@ -69,6 +69,15 @@ func (c *Client) InterfaceDel(ifi *Interface) error {
 	return c.c.InterfaceDel(ifi)
 }
 
+func (c *Client) InterfaceMeshJoin(ifi *Interface, minfos *MeshBasicInfo,
+	meshparams map[string]uint32) error {
+	return c.c.InterfaceMeshJoin(ifi, minfos, meshparams)
+}
+
+func (c *Client) InterfaceMeshGetConfig(ifi *Interface) error {
+	return c.c.InterfaceMeshGetConfig(ifi)
+}
+
 // An osClient is the operating system-specific implementation of Client.
 type osClient interface {
 	Close() error
@@ -80,4 +89,7 @@ type osClient interface {
 	InterfaceAdd(iftype InterfaceType, ifname string,
 		ifhwaddr []byte, flags *InterfaceFlags, dev WifiDevice) (*Interface, error)
 	InterfaceDel(ifi *Interface) error
+	InterfaceMeshJoin(ifi *Interface, minfos *MeshBasicInfo,
+		meshparams map[string]uint32) error
+	InterfaceMeshGetConfig(ifi *Interface) error
 }
