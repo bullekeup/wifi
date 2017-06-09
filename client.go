@@ -61,7 +61,7 @@ func (c *Client) Phys() ([]*Wiphy, error) {
 }
 
 func (c *Client) InterfaceAdd(iftype InterfaceType, ifname string,
-	ifhwaddr []byte, flags *InterfaceFlags, dev WifiDevice) error {
+	ifhwaddr []byte, flags *InterfaceFlags, dev WifiDevice) (*Interface, error) {
 	return c.c.InterfaceAdd(iftype, ifname, ifhwaddr, flags, dev)
 }
 
@@ -78,6 +78,6 @@ type osClient interface {
 	Scan(ifi *Interface) (*ScanResult, error)
 	Phys() ([]*Wiphy, error)
 	InterfaceAdd(iftype InterfaceType, ifname string,
-		ifhwaddr []byte, flags *InterfaceFlags, dev WifiDevice) error
+		ifhwaddr []byte, flags *InterfaceFlags, dev WifiDevice) (*Interface, error)
 	InterfaceDel(ifi *Interface) error
 }

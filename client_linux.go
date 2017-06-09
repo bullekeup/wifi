@@ -101,12 +101,26 @@ func (c *client) ResolveGroupName(name string) (uint32, error) {
 	return 0, errInvalidMcastGrp
 }
 
-func (c *client) JoinGroup(ID uint32) error {
-	return c.c.JoinGroup(ID)
+func (c *client) JoinGroup(name string, ID uint32) error {
+	err := c.c.JoinGroup(ID)
+	if err != nil {
+		return err
+	}
+	c.subscribedgrps[name] = ID
+	return nil
 }
 
-func (c *client) LeaveGroup(ID uint32) error {
-	return c.c.LeaveGroup(ID)
+func (c *client) LeaveGroup(name string) error {
+	grpid, exists := c.subscribedgrps[name]
+	if !exists || grpid == 0 {
+		return nil
+	}
+	err := c.c.LeaveGroup(grpid)
+	if err != nil {
+		return err
+	}
+	delete(c.subscribedgrps, name)
+	return nil
 }
 
 // Close closes the client's generic netlink connection.
@@ -114,59 +128,138 @@ func (c *client) Close() error {
 	return c.c.Close()
 }
 
-// Interfaces requests that nl80211 return a list of all WiFi interfaces present
-// on this system.
-func (c *client) Interfaces() ([]*Interface, error) {
-	// Ask nl80211 to dump a list of all WiFi interfaces
-	req := genetlink.Message{
-		Header: genetlink.Header{
-			Command: nl80211.CmdGetInterface,
-			Version: c.familyVersion,
+func (c *client) forgeCommand(attrs []netlink.Attribute, cmd WiphyCommand) (genetlink.Message, error) {
+	ret := genetlink.Message{
+		Header : genetlink.Header{
+			Command : cmd.Cmd,
+			Version : c.familyVersion,
 		},
 	}
+	if attrs != nil {
+		b, err := netlink.MarshalAttributes(attrs)
+		if err != nil {
+			return ret, err
+		}
+		ret.Data = b
+	}
+	return ret, nil
+}
 
-	flags := netlink.HeaderFlagsRequest | netlink.HeaderFlagsDump
-	msgs, err := c.c.Execute(req, c.familyID, flags)
+func (c *client) Execute(attrs []netlink.Attribute, cmd WiphyCommand) ([]genetlink.Message, error) {
+	req, err := c.forgeCommand(attrs, cmd)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := c.checkMessages(msgs, nl80211.CmdNewInterface); err != nil {
+	if len(cmd.McastGroups) > 0 {
+		// Subscribe to groups config and scan to be able to retrieve when scan has ended
+		// and results are available
+		for _, grp := range cmd.McastGroups {
+			if _, subsd := c.subscribedgrps[grp]; !subsd {
+				grpid, err := c.ResolveGroupName(grp)
+				if err != nil {
+					return nil, err
+				}
+				err = c.JoinGroup(grp, grpid)
+				if err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
+	if !cmd.NoResponse {
+		var msgs []genetlink.Message
+		if len(cmd.McastGroups) > 0 {
+			msgs, err = c.c.ExecuteNoSeqCheck(req, c.familyID, cmd.Flags)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			msgs, err = c.c.Execute(req, c.familyID, cmd.Flags)
+			if err != nil {
+				return nil, err
+			}
+		}
+		var check uint8
+		if cmd.Response != 0 {
+			check = cmd.Response
+		} else {
+			check = cmd.Cmd
+		}
+		if err := c.checkMessages(msgs, check); err != nil {
+			return nil, err
+		}
+		return msgs, nil
+	} else {
+		_, err := c.c.Send(req, c.familyID, cmd.Flags)
+		return nil, err
+	}
+}
+
+// Interfaces requests that nl80211 return a list of all WiFi interfaces present
+// on this system.
+func (c *client) Interfaces() ([]*Interface, error) {
+	// Ask nl80211 to dump a list of all WiFi interfaces
+	cmd := WiphyCommand{
+		Cmd : nl80211.CmdGetInterface,
+		Response : nl80211.CmdNewInterface,
+		Flags : netlink.HeaderFlagsRequest | netlink.HeaderFlagsDump,
+	}
+
+	msgs, err := c.Execute(nil, cmd)
+	if err != nil {
 		return nil, err
 	}
 
 	return parseInterfaces(msgs)
 }
 
-func (c *client) InterfaceAdd(iftype InterfaceType, ifname string,
-	ifhwaddr []byte, flags *InterfaceFlags, dev WifiDevice) error {
+func attrInterfaceFlags(flags *InterfaceFlags) (netlink.Attribute, error) {
 	var flattrs []netlink.Attribute
+	var attr netlink.Attribute
 	var flpl []byte
 	var i uint16
-	phy := dev.Phy()
 
-	if flags != nil {
-		for i = 0; i < nl80211.MntrFlagMax; i++ {
-			if flags.Flags[i] {
-				flattrs = append(flattrs, netlink.Attribute{
-					Type: i,
-				})
-			}
+	if flags == nil {
+		return attr, errInvalidAttr
+	}
+
+	for i = 0; i < nl80211.MntrFlagMax; i++ {
+		if flags.Flags[i] {
+			flattrs = append(flattrs, netlink.Attribute{
+				Type: i,
+			})
 		}
 	}
-	if len(flattrs) > 0 {
-		flb, err := netlink.MarshalAttributes(flattrs)
-		if err != nil {
-			return err
-		}
-		flmsg := netlink.Message{
-			Data : flb,
-		}
-		flpl, err = flmsg.MarshalBinary()
-		if err != nil {
-			return err
-		}
+
+	if len(flattrs) == 0 {
+		return attr, errInvalidAttr
 	}
+
+	flb, err := netlink.MarshalAttributes(flattrs)
+	if err != nil {
+		return attr, err
+	}
+	flmsg := netlink.Message{
+		Data : flb,
+	}
+	flpl, err = flmsg.MarshalBinary()
+	if err != nil {
+		return attr, err
+	}
+
+	attr = netlink.Attribute{
+		Type : nl80211.AttrMntrFlags,
+		Data : flpl,
+	}
+	return attr, nil
+}
+
+func (c *client) InterfaceAdd(iftype InterfaceType, ifname string,
+	ifhwaddr []byte, flags *InterfaceFlags, dev WifiDevice) (*Interface, error) {
+
+	phy := dev.Phy()
 
 	attrs := []netlink.Attribute{
 		{
@@ -183,11 +276,12 @@ func (c *client) InterfaceAdd(iftype InterfaceType, ifname string,
 		},
 	}
 
-	if len(flpl) > 0 {
-		attrs = append(attrs, netlink.Attribute{
-			Type : nl80211.AttrMntrFlags,
-			Data : flpl,
-		})
+	if flags != nil {
+		attr, err := attrInterfaceFlags(flags)
+		if err != nil {
+			return nil, err
+		}
+		attrs = append(attrs, attr)
 	}
 
 	if len(ifhwaddr) == 6 {
@@ -197,58 +291,74 @@ func (c *client) InterfaceAdd(iftype InterfaceType, ifname string,
 		})
 	}
 
-	b, err := netlink.MarshalAttributes(attrs)
-	if err != nil {
-		return err
+	cmd := WiphyCommand{
+		Cmd : nl80211.CmdNewInterface,
+		Flags : netlink.HeaderFlagsRequest,
 	}
 
-	req := genetlink.Message{
-		Header: genetlink.Header{
-			Command: nl80211.CmdNewInterface,
-			Version: c.familyVersion,
-		},
-		Data : b,
-	}
-
-	nlflags := netlink.HeaderFlagsRequest
-	msgs, err := c.c.Execute(req, c.familyID, nlflags)
+	msgs, err := c.Execute(attrs, cmd)
 	if err != nil {
 		fmt.Printf("Failed to execute request !\n")
+		return nil, err
+	}
+
+	ifs, err := parseInterfaces(msgs)
+	if err != nil {
+		return nil, err
+	}
+	return ifs[0], nil
+}
+
+// TODO: Kernel doesn't respond but sends a del info on if mcast
+func (c *client) InterfaceDel(ifi *Interface) error {
+	cmd := WiphyCommand{
+		Cmd : nl80211.CmdDelInterface,
+		Flags : netlink.HeaderFlagsRequest,
+		McastGroups : []string{"config", "scan"},
+	}
+
+	_, err := c.Execute(ifi.idAttrs(), cmd)
+	if err != nil {
 		return err
 	}
 
-	//TODO: Return the newly created interface, or
-	//handle all interface adding / delete in a dedicated
-	//goroutine listening on multicast events
-	//for _, m := range msgs {
-	//	fmt.Printf("Received \n%v\n", m)
-	//}
+	for _, grp := range cmd.McastGroups {
+		c.LeaveGroup(grp)
+	}
 
 	return nil
 }
 
-func (c *client) InterfaceDel(ifi *Interface) error {
+func (c *client) InterfaceMeshJoin(ifi *Interface, minfos *MeshBasicInfo,
+	meshparams map[string]uint32) error {
+	cmd := WiphyCommand{
+		Cmd : nl80211.CmdJoinMesh,
+		Flags : netlink.HeaderFlagsRequest,
+	}
+
+	// First attribute : netdev index
 	attrs := []netlink.Attribute{
 		{
-			Type: nl80211.AttrIfindex,
-			Data: nlenc.Uint32Bytes(uint32(ifi.Index)),
+			Type : nl80211.AttrIfindex,
+			Data : nlenc.Uint32Bytes(uint32(ifi.Index)),
 		},
 	}
-	b, err := netlink.MarshalAttributes(attrs)
+
+	mbasica, err := attrMeshBasic(minfos)
 	if err != nil {
 		return err
 	}
+	attrs = append(attrs, mbasica...)
 
-	req := genetlink.Message{
-		Header: genetlink.Header{
-			Command: nl80211.CmdDelInterface,
-			Version: c.familyVersion,
-		},
-		Data: b,
+	if len(meshparams) > 0 {
+		mparamsa, err := attrMeshParams(meshparams)
+		if err != nil {
+			return err
+		}
+		attrs = append(attrs, mparamsa)
 	}
 
-	flags := netlink.HeaderFlagsRequest
-	msgs, err := c.c.Execute(req, c.familyID, flags)
+	msgs, err := c.Execute(attrs, cmd)
 	if err != nil {
 		return err
 	}
@@ -260,48 +370,114 @@ func (c *client) InterfaceDel(ifi *Interface) error {
 	return nil
 }
 
-func (c *client) InterfaceMeshJoin(ifi *Interface, string meshID, freq uint32,
-	chanmode string, basicrates []uint8, mcastrate uint32, beaconinterval uint32,
-	dtimperiod uint32, vendorsync bool, meshparams map[string]uint32) error {
-
-	//Warn ! nested attributes (one for each -) :
-	// - vendorsync
-	// - meshparams
-	return nil
-}
-
-func parseAttributesMeshBasic(string meshID, freq uint32,
-	chanmode string, basicrates []uint8, mcastrate uint32, beaconinterval uint32,
-	dtimperiod uint32, vendorsync bool) ([]netlink.Attribute, error) {
+func attrMeshBasic(minfos *MeshBasicInfo) ([]netlink.Attribute, error) {
 	attrs := []netlink.Attribute{
 		{
 			Type : nl80211.AttrMeshId,
-			Data : nlenc.Bytes(meshID),
+			Data : nlenc.Bytes(minfos.meshID),
 		},
 	}
 
-	if freq != 0 {
+	if minfos.freq != 0 {
 		attrs = append(attrs, netlink.Attribute{
 			Type : nl80211.AttrWiphyFreq,
-			Data : nlenc.Uint32Bytes(freq),
+			Data : nlenc.Uint32Bytes(minfos.freq),
 		})
 	}
-	//TODO: finish parsing theses
-	if chamode != nil {
+	if minfos.chanmode != "" {
+		achan, err := ChanModeAttrs(minfos.chanmode)
+		if err != nil {
+			return nil, err
+		}
+		attrs = append(attrs, achan...)
+	}
+	if len(minfos.basicrates) > 0 {
+		arates, err := BasicRatesAttr(minfos.basicrates)
+		if err != nil {
+			return nil, err
+		}
+		attrs = append(attrs, arates)
+	}
+	if minfos.mcastrate > 0 {
 		attrs = append(attrs, netlink.Attribute{
-			Type : ,
-			Data : ,
+			Type : nl80211.AttrBeaconInterval,
+			Data : nlenc.Uint32Bytes(minfos.mcastrate),
 		})
 	}
+	if minfos.dtimperiod > 0 {
+		attrs = append(attrs, netlink.Attribute{
+			Type : nl80211.AttrDtimPeriod,
+			Data : nlenc.Uint32Bytes(minfos.dtimperiod),
+		})
+	}
+
+	// Vendor sync nested attribute
+	vattr := netlink.Attribute{}
+	vattr.Type = nl80211.MeshSetupEnableVendorSync
+	if minfos.vendorsync {
+		vattr.Data = []byte{0x1}
+	} else {
+		vattr.Data = []byte{0x0}
+	}
+	bvattr, err := vattr.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	attrs = append(attrs, netlink.Attribute{
+		Type : nl80211.AttrMeshSetup,
+		Nested : true,
+		Data : bvattr,
+	})
+	return attrs, nil
+}
+
+func attrMeshParams(mparams map[string]uint32) (netlink.Attribute, error) {
+	var attr netlink.Attribute
+	// Mesh params are also in a nested attribute
+	mparattrs, err := MeshParamsAttrs(mparams)
+	if err != nil {
+		return attr, err
+	}
+	bmparattrs, err := netlink.MarshalAttributes(mparattrs)
+	if err != nil {
+		return attr, err
+	}
+
+	attr = netlink.Attribute{
+		Type : nl80211.AttrMeshParams,
+		Nested : true,
+		Data : bmparattrs,
+	}
+	return attr, nil
 }
 
 func (c *client) InterfaceMeshLeave(ifi *Interface) error {
+	cmd := WiphyCommand{
+		Cmd : nl80211.CmdLeaveMesh,
+		Flags : netlink.HeaderFlagsRequest,
+	}
+
+	msgs, err := c.Execute(ifi.idAttrs(), cmd)
+	if err != nil {
+		return err
+	}
+
+	for _, m := range msgs {
+		fmt.Printf("Received \n%v\n", m)
+	}
+
 	return nil
 }
 
 // BSS requests that nl80211 return the BSS for the specified Interface.
 func (c *client) BSS(ifi *Interface) (*BSS, error) {
-	msgs, err := c.BSSNoParse(ifi)
+	cmd := WiphyCommand{
+		Cmd : nl80211.CmdGetScan,
+		Response : nl80211.CmdNewScanResults,
+		Flags : netlink.HeaderFlagsRequest | netlink.HeaderFlagsDump,
+	}
+
+	msgs, err := c.Execute(ifi.idAttrs(), cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -309,58 +485,16 @@ func (c *client) BSS(ifi *Interface) (*BSS, error) {
 	return parseBSS(msgs)
 }
 
-func (c *client) BSSNoParse(ifi *Interface) ([]genetlink.Message, error) {
-	b, err := netlink.MarshalAttributes(ifi.idAttrs())
-	if err != nil {
-		return nil, err
-	}
-
-	// Ask nl80211 to retrieve BSS information for the interface specified
-	// by its attributes
-	req := genetlink.Message{
-		Header: genetlink.Header{
-			Command: nl80211.CmdGetScan,
-			Version: c.familyVersion,
-		},
-		Data: b,
-	}
-
-	flags := netlink.HeaderFlagsRequest | netlink.HeaderFlagsDump
-	msgs, err := c.c.Execute(req, c.familyID, flags)
-	if err != nil {
-		return nil, err
-	}
-
-	if err := c.checkMessages(msgs, nl80211.CmdNewScanResults); err != nil {
-		return nil, err
-	}
-
-	return msgs, nil
-}
-
 // StationInfo requests that nl80211 return station info for the specified
 // Interface.
 func (c *client) StationInfo(ifi *Interface) (*StationInfo, error) {
-	b, err := netlink.MarshalAttributes(ifi.idAttrs())
-	if err != nil {
-		return nil, err
+	cmd := WiphyCommand{
+		Cmd : nl80211.CmdGetStation,
+		Response : nl80211.CmdNewStation,
+		Flags : netlink.HeaderFlagsRequest | netlink.HeaderFlagsDump,
 	}
 
-	// Ask nl80211 to retrieve station info for the interface specified
-	// by its attributes
-	req := genetlink.Message{
-		Header: genetlink.Header{
-			// From nl80211.h:
-			//  * @NL80211_CMD_GET_STATION: Get station attributes for station identified by
-			//  * %NL80211_ATTR_MAC on the interface identified by %NL80211_ATTR_IFINDEX.
-			Command: nl80211.CmdGetStation,
-			Version: c.familyVersion,
-		},
-		Data: b,
-	}
-
-	flags := netlink.HeaderFlagsRequest | netlink.HeaderFlagsDump
-	msgs, err := c.c.Execute(req, c.familyID, flags)
+	msgs, err := c.Execute(ifi.idAttrs(), cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -374,66 +508,27 @@ func (c *client) StationInfo(ifi *Interface) (*StationInfo, error) {
 		return nil, errMultipleMessages
 	}
 
-	if err := c.checkMessages(msgs, nl80211.CmdNewStation); err != nil {
-		return nil, err
-	}
-
 	return parseStationInfo(msgs[0].Data)
 }
 
 // Scan request a new scan for available networks to the kernel.
 // We must have subscribed to groups sending back scan triggered and results available
 func (c *client) Scan(ifi *Interface) (*ScanResult, error) {
-	grps := make(map[string]uint32)
-	grps["config"] = 0
-	grps["scan"] = 0
-
-	// Subscribe to groups config and scan to be able to retrieve when scan has ended
-	// and results are available
-	for grp, _ := range grps {
-		if _, subsd := c.subscribedgrps[grp]; !subsd {
-			grpid, err := c.ResolveGroupName(grp)
-			grps[grp] = grpid
-			if err != nil {
-				return nil, err
-			}
-			err = c.JoinGroup(grps[grp])
-			if err != nil {
-				return nil, err
-			}
-			defer c.LeaveGroup(grps[grp])
-		}
+	cmd := WiphyCommand{
+		Cmd : nl80211.CmdTriggerScan,
+		Flags : netlink.HeaderFlagsRequest,
+		McastGroups : []string{"config", "scan"},
 	}
 
-	// Send a trigger scan command for the requested interface to the kernel
-	b, err := netlink.MarshalAttributes(ifi.idAttrs())
+	// Execute the command
+	msgs, err := c.Execute(ifi.idAttrs(), cmd)
 	if err != nil {
-		return nil, err
-	}
-
-	req := genetlink.Message{
-		Header: genetlink.Header{
-			// From nl80211h:
-			//  * @NL80211_CMD_TRIGGER_SCAN: trigger a new scan
-			//  * Note that we don't use any options,
-			//  * just perform an active scan for all available networks
-			//  *
-			Command: nl80211.CmdTriggerScan,
-			Version: c.familyVersion,
-		},
-		Data: b,
-	}
-	flags := netlink.HeaderFlagsRequest
-	msgs, err := c.c.ExecuteNoSeqCheck(req, c.familyID, flags)
-	if err != nil {
-		return nil, err
-	}
-	if err := c.checkMessages(msgs, nl80211.CmdTriggerScan); err != nil {
 		return nil, err
 	}
 
 	// Wait for scan results (first response is received as mcast response
 	// and contain scan infos, see parseScan function)
+	//TODO: Move this in a dedicated channel which parses available networks
 	for true {
 		msgs, _, err = c.c.Receive()
 		if err != nil {
@@ -444,9 +539,18 @@ func (c *client) Scan(ifi *Interface) (*ScanResult, error) {
 		}
 	}
 	results, err := parseScan(msgs)
+	for _, grp := range cmd.McastGroups {
+		c.LeaveGroup(grp)
+	}
 
 	// Request BSS results and parse them
-	msgs, err = c.BSSNoParse(ifi)
+	cmd = WiphyCommand{
+		Cmd : nl80211.CmdGetScan,
+		Response : nl80211.CmdNewScanResults,
+		Flags : netlink.HeaderFlagsRequest | netlink.HeaderFlagsDump,
+	}
+
+	msgs, err = c.Execute(ifi.idAttrs(), cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -460,22 +564,13 @@ func (c *client) Scan(ifi *Interface) (*ScanResult, error) {
 }
 
 func (c *client) ProtocolFeatures() (uint32, error) {
-	req := genetlink.Message{
-		Header: genetlink.Header{
-			// From nl80211.h:
-			//  * @NL80211_CMD_GET_PROTOCOL_FEATURES: Get protocol features (uint32), to parse with
-			//  * %NL80211_ATTR_PROTOCOL_FEATURES flag.
-			Command: nl80211.CmdGetProtocolFeatures,
-			Version: c.familyVersion,
-		},
+	cmd := WiphyCommand{
+		Cmd : nl80211.CmdGetProtocolFeatures,
+		Flags : netlink.HeaderFlagsRequest,
 	}
 
-	flags := netlink.HeaderFlagsRequest
-	msgs, err := c.c.Execute(req, c.familyID, flags)
+	msgs, err := c.Execute(nil, cmd)
 	if err != nil {
-		return 0, err
-	}
-	if err := c.checkMessages(msgs, nl80211.CmdGetProtocolFeatures); err != nil {
 		return 0, err
 	}
 
@@ -492,22 +587,14 @@ func (c *client) Phys() ([]*Wiphy, error) {
 		return nil, errInvalidAttr
 	}
 
-	req := genetlink.Message{
-		Header: genetlink.Header{
-			// From nl80211.h:
-			//  * @NL80211_CMD_GET_WIPHY: Get all available physical devices on system
-			Command: nl80211.CmdGetWiphy,
-			Version: c.familyVersion,
-		},
+	cmd := WiphyCommand{
+		Cmd : nl80211.CmdGetWiphy,
+		Response : nl80211.CmdNewWiphy,
+		Flags : netlink.HeaderFlagsRequest | netlink.HeaderFlagsDump,
 	}
 
-	flags := netlink.HeaderFlagsRequest | netlink.HeaderFlagsDump
-	msgs, err := c.c.Execute(req, c.familyID, flags)
+	msgs, err := c.Execute(nil, cmd)
 	if err != nil {
-		return nil, err
-	}
-
-	if err := c.checkMessages(msgs, nl80211.CmdNewWiphy); err != nil {
 		return nil, err
 	}
 
@@ -891,7 +978,7 @@ func parseWiphys(msgs []genetlink.Message) ([]*Wiphy, error) {
 					continue
 				}
 				for _, attrcmd := range attrcmds {
-					wiphy.SupportedCmds = append(wiphy.SupportedCmds, WiphyCommand(nlenc.Uint32(attrcmd.Data)))
+					wiphy.SupportedCmds = append(wiphy.SupportedCmds, WiphyCommand{Cmd : attrcmd.Data[0],})
 				}
 			case nl80211.AttrCipherSuites:
 				for i := 0; i < len(a.Data); i+=4 {

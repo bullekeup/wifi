@@ -3,6 +3,7 @@ package wifi
 
 import (
 	"fmt"
+	"github.com/mdlayher/netlink"
   "github.com/mdlayher/wifi/internal/nl80211"
 )
 
@@ -60,11 +61,17 @@ const (
 	FT_SAE_SHA256 = 0x000fac09
 )
 
-type WiphyCommand uint32
+type WiphyCommand struct {
+	Cmd uint8
+	Response uint8
+	Flags netlink.HeaderFlags
+	McastGroups []string
+	NoResponse bool
+}
 
 // TODO: complete that
 func (c WiphyCommand) String() string {
-	switch c {
+	switch c.Cmd {
 	case nl80211.CmdNewInterface:
 		return "new_interface"
 	case nl80211.CmdSetInterface:
@@ -76,7 +83,7 @@ func (c WiphyCommand) String() string {
   case nl80211.CmdNewStation:
     return "new_station"
 	default:
-		return fmt.Sprintf("unknown cmd (%d)", c)
+		return fmt.Sprintf("unknown cmd (%d)", c.Cmd)
 	}
 }
 

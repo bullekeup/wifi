@@ -1,17 +1,36 @@
 package wifi
 
 import (
+  "errors"
+  "github.com/mdlayher/netlink"
+  "github.com/mdlayher/netlink/nlenc"
   "github.com/mdlayher/wifi/internal/nl80211"
 )
 
+var (
+  errInvalidChanMode = errors.New("invalid channel mode")
+  errInvalidMeshParamSize = errors.New("invalid mesh param size")
+)
+
+type MeshBasicInfo struct {
+  meshID string
+  freq uint32
+	chanmode string
+  basicrates []uint8
+  mcastrate uint32
+  beaconinterval uint32
+	dtimperiod uint32
+  vendorsync bool
+}
+
 type MeshParamDescr struct {
   Name string
-  Attr int
+  Attr uint16
   Size uint8
 }
 
-const (
-  MeshParams = []MeshParamDescr {
+var (
+  MeshParams = [26]MeshParamDescr {
     {
       Name: "mesh_retry_timeout",
       Attr: nl80211.MeshconfRetryTimeout,
@@ -144,3 +163,118 @@ const (
     },
   }
 )
+
+type ChanMode struct {
+  Width uint32
+  Freq1Diff uint32
+  ChanType int
+}
+
+var (
+  neg = 10
+  chanModes = map[string]ChanMode{
+    "HT20" : {
+      Width : nl80211.ChanWidth20,
+      Freq1Diff : 0,
+      ChanType : nl80211.ChanHt20,
+    },
+    "HT40+" : {
+      Width : nl80211.ChanWidth40,
+      Freq1Diff : 10,
+      ChanType : nl80211.ChanHt40plus,
+    },
+    "HT40-" : {
+      Width : nl80211.ChanWidth40,
+      Freq1Diff : uint32(neg),
+      ChanType : nl80211.ChanHt40minus,
+    },
+    "NOHT" : {
+      Width : nl80211.ChanWidth20Noht,
+      Freq1Diff : 0,
+      ChanType : nl80211.ChanNoHt,
+    },
+    "80MHz" : {
+      Width : nl80211.ChanWidth80,
+      Freq1Diff : 0,
+      ChanType : -1,
+    },
+  }
+  chanVHT80 = [6]uint32{5180, 5260, 5500, 5580, 5660, 5745,}
+)
+
+func (ch ChanMode) GetCF1(freq uint32) uint32 {
+  if ch.Width == nl80211.ChanWidth80 {
+    for i := 0; i < len(chanVHT80); i++ {
+      if freq <= chanVHT80[i] && freq < (chanVHT80[i] + 80) {
+        return chanVHT80[i] + 30
+      }
+    }
+  }
+  return freq + ch.Freq1Diff
+}
+
+func ChanModeAttrs(name string) ([]netlink.Attribute, error) {
+  mode, exists := chanModes[name]
+  if !exists {
+    return nil, errInvalidChanMode
+  }
+  attrs := []netlink.Attribute{
+    {
+      Type : nl80211.AttrChannelWidth,
+      Data : nlenc.Uint32Bytes(mode.Width),
+    },
+    {
+      Type : nl80211.AttrCenterFreq1,
+      Data : nlenc.Uint32Bytes(mode.GetCF1(mode.Freq1Diff)),
+    },
+  }
+  if mode.ChanType != -1 {
+    attrs = append(attrs, netlink.Attribute{
+      Type : nl80211.AttrWiphyChannelType,
+      Data : nlenc.Uint32Bytes(uint32(mode.ChanType)),
+    })
+  }
+  return attrs, nil
+}
+
+func BasicRatesAttr(urates []uint8) (netlink.Attribute, error) {
+  var rates []byte
+  for _, rate := range urates {
+    rates = append(rates, rate * 2)
+  }
+  if len(rates) > 0 {
+    return netlink.Attribute{
+      Type : nl80211.AttrBssBasicRates,
+      Data : rates,
+    }, nil
+  }
+  return netlink.Attribute{}, errInvalidAttr
+}
+
+func MeshParamsAttrs(inparams map[string]uint32) ([]netlink.Attribute, error) {
+  var paramsattr []netlink.Attribute
+  for _, param := range MeshParams {
+    if inparam, exists := inparams[param.Name]; exists {
+      var b []byte
+      switch param.Size {
+      case 1:
+        b = []byte{uint8(inparam)}
+      case 2:
+        b = nlenc.Uint16Bytes(uint16(inparam))
+      case 4:
+        b = nlenc.Uint32Bytes(uint32(inparam))
+      default:
+        b = nil
+      }
+      if len(b) == 0 {
+        return nil, errInvalidMeshParamSize
+      }
+      paramsattr = append(paramsattr, netlink.Attribute{
+        Type : param.Attr,
+        Data : b,
+      })
+    }
+  }
+
+  return paramsattr, nil
+}
