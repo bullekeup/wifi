@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 	"fmt"
+	"strings"
 
 	"github.com/mdlayher/netlink"
 	"github.com/mdlayher/netlink/genetlink"
@@ -207,6 +208,10 @@ func (c *client) Execute(attrs []netlink.Attribute, cmd WiphyCommand) ([]genetli
 		_, err := c.c.Send(req, c.familyID, cmd.Flags)
 		return nil, err
 	}
+}
+
+func (c *client) Receive() ([]genetlink.Message, []netlink.Message, error) {
+	return c.c.Receive()
 }
 
 // Interfaces requests that nl80211 return a list of all WiFi interfaces present
@@ -824,6 +829,9 @@ func (b *BSS) parseAttributes(attrs []netlink.Attribute) error {
 				switch ie.ID {
 				case ieSSID:
 					b.SSID = decodeSSID(ie.Data)
+				case ieMeshID:
+					b.MeshNet = true
+					b.MeshName = decodeSSID(ie.Data)
 				}
 			}
 		}
@@ -1200,7 +1208,7 @@ func decodeSSID(b []byte) string {
 		buf.WriteRune(r)
 	}
 
-	return buf.String()
+	return strings.TrimRight(buf.String(), "\x00")
 }
 
 var _ genl = &sysGENL{}

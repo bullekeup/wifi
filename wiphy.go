@@ -2,6 +2,7 @@
 package wifi
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/mdlayher/netlink"
   "github.com/mdlayher/wifi/internal/nl80211"
@@ -168,6 +169,14 @@ type Wiphy struct {
 	APUAPSD bool
 	TDLS bool
   Band []*WiphyBand
+}
+
+func (phy *Wiphy) String() string {
+	var buffer bytes.Buffer
+
+  buffer.WriteString(fmt.Sprintf("Phy #%d (%s)\n", phy.ID, phy.Name))
+
+  return buffer.String()
 }
 
 func (phy *Wiphy) Phy() int {

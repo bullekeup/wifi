@@ -3,6 +3,8 @@ package wifi
 import (
 	"fmt"
 	"runtime"
+	"github.com/mdlayher/netlink"
+	"github.com/mdlayher/netlink/genetlink"
 )
 
 var (
@@ -74,8 +76,26 @@ func (c *Client) InterfaceMeshJoin(ifi *Interface, minfos *MeshBasicInfo,
 	return c.c.InterfaceMeshJoin(ifi, minfos, meshparams)
 }
 
+func (c *Client) InterfaceMeshLeave(ifi *Interface) error {
+	return c.c.InterfaceMeshLeave(ifi)
+}
+
 func (c *Client) InterfaceMeshGetConfig(ifi *Interface) error {
 	return c.c.InterfaceMeshGetConfig(ifi)
+}
+
+func (c *Client) Receive() ([]genetlink.Message, []netlink.Message, error) {
+	return c.c.Receive()
+}
+
+func (c *Client) ResolveGroupName(name string) (uint32, error) {
+	return c.c.ResolveGroupName(name)
+}
+func (c *Client) JoinGroup(name string, ID uint32) error {
+	return c.c.JoinGroup(name, ID)
+}
+func (c *Client) LeaveGroup(name string) error {
+	return c.c.LeaveGroup(name)
 }
 
 // An osClient is the operating system-specific implementation of Client.
@@ -91,5 +111,10 @@ type osClient interface {
 	InterfaceDel(ifi *Interface) error
 	InterfaceMeshJoin(ifi *Interface, minfos *MeshBasicInfo,
 		meshparams map[string]uint32) error
+	InterfaceMeshLeave(ifi *Interface) error
 	InterfaceMeshGetConfig(ifi *Interface) error
+	Receive() ([]genetlink.Message, []netlink.Message, error)
+	ResolveGroupName(name string) (uint32, error)
+	JoinGroup(name string, ID uint32) error
+	LeaveGroup(name string) error
 }

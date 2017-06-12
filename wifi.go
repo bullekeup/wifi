@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"time"
+	"bytes"
 )
 
 var (
@@ -140,6 +141,19 @@ type Interface struct {
 	Frequency int
 }
 
+func (netif *Interface) String() string {
+	var buffer bytes.Buffer
+
+	buffer.WriteString(fmt.Sprintf("Interface %s (index %d)\n", netif.Name, netif.Index))
+	buffer.WriteString(fmt.Sprintf(" * On phy#%d\n", netif.PHY))
+	buffer.WriteString(fmt.Sprintf(" * Virtual device #%d\n", netif.Device))
+	buffer.WriteString(fmt.Sprintf(" * HW Addr:     %s\n", netif.HardwareAddr.String()))
+	buffer.WriteString(fmt.Sprintf(" * If type:     %s\n", netif.Type.String()))
+	buffer.WriteString(fmt.Sprintf(" * Frequency:   %d MHz\n", netif.Frequency))
+
+	return buffer.String()
+}
+
 func (netif *Interface) Phy() int {
 	return netif.PHY
 }
@@ -210,6 +224,9 @@ type BSS struct {
 
 	// The status of the client within the BSS.
 	Status BSSStatus
+
+	MeshNet bool
+	MeshName string
 }
 
 // A BSSStatus indicates the current status of client within a BSS.
@@ -260,6 +277,7 @@ type ScanResult struct {
 // List of 802.11 Information Element types.
 const (
 	ieSSID = 0
+	ieMeshID = 114
 )
 
 // An ie is an 802.11 information element.
