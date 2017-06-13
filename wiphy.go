@@ -106,6 +106,22 @@ type WiphyBitrate struct {
 	ShortPreamb bool
 }
 
+type WiphyBandHtOps struct {
+	PrimaryChan uint8
+	SecondaryChanOffset uint8
+	STAChanWidth uint8
+	RIFS uint8
+	HTProtection uint8
+	NonGFPresent uint8
+	OBSSNonGFPresent uint8
+	DualBeacon uint8
+	DualCTSProtection uint8
+	STBCBeacon uint8
+	LSIGTXOPProt uint8
+	PCOActive uint8
+	PCOPhase uint8
+}
+
 type WiphyBandHtMcs struct {
   MaxRxSuppDataRate uint32
   TxMcsSetDefined bool
@@ -115,27 +131,29 @@ type WiphyBandHtMcs struct {
   RxMcsBitmask []byte
 }
 
+type WiphyBandHtInfos struct {
+	Capa uint16
+	AMPDUFactor uint8		// parsed with print_ampdu_length in iw
+	AMPDUDensity uint8  // parsed with print_ampdu_spacing in iw
+	MCSInfo WiphyBandHtMcs // parsed with print_ht_mcs in iw
+}
+
+type WiphyBandVhtOps struct {
+	ChanWidth uint8
+	CtrFreqSeg1 uint8
+	CtrFreqSeg2 uint8
+	BasicMcsSet uint16
+}
+
+type WiphyBandVhtInfos struct {
+	Capa uint32
+	MCSInfo []byte
+}
+
 type WiphyBand struct {
   ID uint16
-	HTCapa uint16
-	HTAMPDUFactor uint8
-	HTAMPDUDensity uint8
-  MCSInfo WiphyBandHtMcs
-	VHTCapa bool
-	VHTMaxMPDULen uint8
-	VHTSupportedChanWidth uint8
-	VHTRxLDPC bool
-	VHTShortGI80 bool
-	VHTShortGI160 bool
-	VHTTxSBTC bool
-	VHTSuBeamformer bool
-	VHTSuBeamformee bool
-	VHTMuBeamformer bool
-	VHTMuBeamformee bool
-	VHT_TXOP_PS bool
-	VHT_HTC_VHT bool
-	VHTRXAntennaConsist bool
-	VHTTXAntennaConsist bool
+	HtInfos WiphyBandHtInfos
+	VhtInfos WiphyBandVhtInfos
 }
 
 //TODO: Add WoWlan, combinations, HT - VHT, Feature flags, Ext features, Coalesce rule support

@@ -3,15 +3,12 @@
 package wifi
 
 import (
-	"bytes"
 	"errors"
 	"math"
 	"net"
 	"os"
 	"time"
-	"unicode/utf8"
 	"fmt"
-	"strings"
 
 	"github.com/mdlayher/netlink"
 	"github.com/mdlayher/netlink/genetlink"
@@ -373,7 +370,6 @@ func (c *client) InterfaceMeshJoin(ifi *Interface, minfos *MeshBasicInfo,
 		return err
 	}
 	attrs = append(attrs, mbasica...)
-	fmt.Printf("Adding basic mesh infos: %v\n", mbasica)
 
 	if len(meshparams) > 0 {
 		fmt.Printf("Parsing mesh parameters...\n")
@@ -819,7 +815,7 @@ func (b *BSS) parseAttributes(attrs []netlink.Attribute) error {
 			// constants.  This may not be the case on other operating systems.
 			b.Status = BSSStatus(nlenc.Uint32(a.Data))
 		case nl80211.BssInformationElements:
-			ies, err := parseIEs(a.Data)
+			ies, err := ParseIEs(a.Data)
 			if err != nil {
 				return err
 			}
@@ -828,10 +824,22 @@ func (b *BSS) parseAttributes(attrs []netlink.Attribute) error {
 			for _, ie := range ies {
 				switch ie.ID {
 				case ieSSID:
-					b.SSID = decodeSSID(ie.Data)
+					b.SSID = ParseSSID(ie.Data)
 				case ieMeshID:
-					b.MeshNet = true
-					b.MeshName = decodeSSID(ie.Data)
+					b.MBSS = true
+					b.MeshID = ParseSSID(ie.Data)
+				case ieSupportedRates:
+					b.Ies.SupportedRates = ParseSupportedRates(ie.Data)
+				case ieHtCapa:
+					b.Ies.HtInfos = ParseHtInfos(ie.Data)
+				case ieHtOper:
+					b.Ies.HtOps = ParseHtOper(ie.Data)
+				case ieVhtCapa:
+					b.Ies.VhtInfos = ParseVhtInfos(ie.Data)
+				case ieVhtOper:
+					b.Ies.VhtOps = ParseVhtOps(ie.Data)
+				case ieMeshConfig:
+					b.Ies.MeshCfg = ParseMeshCfg(ie.Data)
 				}
 			}
 		}
@@ -1069,32 +1077,8 @@ func parseWiphys(msgs []genetlink.Message) ([]*Wiphy, error) {
 					if err != nil {
 						continue
 					}
-					for _, battr := range battrs {
-						switch battr.Type {
-						case nl80211.BandAttrHtCapa:
-							band.HTCapa = nlenc.Uint16(battr.Data)
-						case nl80211.BandAttrHtAmpduFactor:
-							band.HTAMPDUFactor = nlenc.Uint8(battr.Data)
-						case nl80211.BandAttrHtAmpduDensity:
-							band.HTAMPDUDensity = nlenc.Uint8(battr.Data)
-						case nl80211.BandAttrHtMcsSet:
-							if len(battr.Data) != 16 {
-								continue
-							}
-							band.MCSInfo.MaxRxSuppDataRate = uint32((battr.Data[10] | ((battr.Data[11] & 0x03) <<8)))
-							band.MCSInfo.TxMcsSetDefined = (battr.Data[12] & (1 << 0)) != 0
-							band.MCSInfo.TxMcsSetEqual = (battr.Data[12] & (1 << 1)) == 0
-							band.MCSInfo.TxMaxNumSpatialStreams = uint32(((battr.Data[12] >> 2) & 3) + 1)
-							band.MCSInfo.TxUnequalModulation = (battr.Data[12] & (1 << 4)) != 0
-							band.MCSInfo.RxMcsBitmask = battr.Data[0:10]
-							// We must keep only 76 bits (9.5 bytes)
-							band.MCSInfo.RxMcsBitmask[9] &= 0x0 << 4
-						case nl80211.BandAttrVhtCapa:
-							band.VHTCapa = true
-						case nl80211.BandAttrVhtMcsSet:
-							continue
-						}
-					}
+					band.HtInfos = parseHtInfosAttrs(battrs)
+					band.VhtInfos = parseVhtInfosAttrs(battrs)
 				}
 				if band != nil {
 					wiphy.Band = append(wiphy.Band, band)
@@ -1107,6 +1091,46 @@ func parseWiphys(msgs []genetlink.Message) ([]*Wiphy, error) {
 	}
 
 	return ret, nil
+}
+
+func parseVhtInfosAttrs(attrs []netlink.Attribute) WiphyBandVhtInfos {
+	VhtInfos := WiphyBandVhtInfos{}
+	for _, battr := range attrs {
+		switch battr.Type {
+		case nl80211.BandAttrVhtCapa:
+			VhtInfos.Capa = nlenc.Uint32(battr.Data)
+		case nl80211.BandAttrVhtMcsSet:
+			VhtInfos.MCSInfo = battr.Data
+		}
+	}
+	return VhtInfos
+}
+
+func parseHtInfosAttrs(attrs []netlink.Attribute) WiphyBandHtInfos {
+	HtInfos := WiphyBandHtInfos{}
+	for _, battr := range attrs {
+		switch battr.Type {
+		case nl80211.BandAttrHtCapa:
+			HtInfos.Capa = nlenc.Uint16(battr.Data)
+		case nl80211.BandAttrHtAmpduFactor:
+			HtInfos.AMPDUFactor = nlenc.Uint8(battr.Data)
+		case nl80211.BandAttrHtAmpduDensity:
+			HtInfos.AMPDUDensity = nlenc.Uint8(battr.Data)
+		case nl80211.BandAttrHtMcsSet:
+			if len(battr.Data) != 16 {
+				continue
+			}
+			HtInfos.MCSInfo.MaxRxSuppDataRate = uint32((battr.Data[10] | ((battr.Data[11] & 0x03) <<8)))
+			HtInfos.MCSInfo.TxMcsSetDefined = (battr.Data[12] & (1 << 0)) != 0
+			HtInfos.MCSInfo.TxMcsSetEqual = (battr.Data[12] & (1 << 1)) == 0
+			HtInfos.MCSInfo.TxMaxNumSpatialStreams = uint32(((battr.Data[12] >> 2) & 3) + 1)
+			HtInfos.MCSInfo.TxUnequalModulation = (battr.Data[12] & (1 << 4)) != 0
+			HtInfos.MCSInfo.RxMcsBitmask = battr.Data[0:10]
+			// We must keep only 76 bits (9.5 bytes)
+			HtInfos.MCSInfo.RxMcsBitmask[9] &= 0x0 << 4
+		}
+	}
+	return HtInfos
 }
 
 // rateInfo provides statistics about the receive or transmit rate of
@@ -1174,7 +1198,7 @@ func parseScan(msgs []genetlink.Message) (*ScanResult, error) {
 					return nil, err
 				}
 				for _, ssid := range nestattrs {
-					ret.SSIDs = append(ret.SSIDs, decodeSSID(ssid.Data))
+					ret.SSIDs = append(ret.SSIDs, ParseSSID(ssid.Data))
 				}
 			case nl80211.AttrWdev:
 				ret.Wdev = uint64(nlenc.Uint64(a.Data))
@@ -1195,20 +1219,6 @@ func attrsContain(attrs []netlink.Attribute, typ uint16) bool {
 	}
 
 	return false
-}
-
-// decodeSSID safely parses a byte slice into UTF-8 runes, and returns the
-// resulting string from the runes.
-func decodeSSID(b []byte) string {
-	buf := bytes.NewBuffer(nil)
-	for len(b) > 0 {
-		r, size := utf8.DecodeRune(b)
-		b = b[size:]
-
-		buf.WriteRune(r)
-	}
-
-	return strings.TrimRight(buf.String(), "\x00")
 }
 
 var _ genl = &sysGENL{}

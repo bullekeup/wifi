@@ -164,6 +164,15 @@ var (
   }
 )
 
+type MeshCfg struct {
+  PathSeleProtoID uint8
+  PathSeleProtoMetricID uint8
+  CongestCtrlModeID uint8
+  SyncMethodID uint8
+  AuthProtoID uint8
+  MeshFormationInfo uint16
+}
+
 type ChanMode struct {
   Width uint32
   Freq1Diff uint32

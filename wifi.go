@@ -202,6 +202,15 @@ type StationInfo struct {
 	BeaconLoss int
 }
 
+type IeSet struct {
+	SupportedRates []byte
+	HtInfos WiphyBandHtInfos
+	HtOps WiphyBandHtOps
+	VhtInfos WiphyBandVhtInfos
+	VhtOps WiphyBandVhtOps
+	MeshCfg MeshCfg
+}
+
 // A BSS is an 802.11 basic service set.  It contains information about a wireless
 // network associated with an Interface.
 type BSS struct {
@@ -225,8 +234,10 @@ type BSS struct {
 	// The status of the client within the BSS.
 	Status BSSStatus
 
-	MeshNet bool
-	MeshName string
+	MBSS bool
+	MeshID string
+
+	Ies IeSet
 }
 
 // A BSSStatus indicates the current status of client within a BSS.
@@ -277,6 +288,12 @@ type ScanResult struct {
 // List of 802.11 Information Element types.
 const (
 	ieSSID = 0
+	ieSupportedRates = 1
+	ieHtCapa = 45
+	ieHtOper = 61
+	ieVhtCapa = 191
+	ieVhtOper = 192
+	ieMeshConfig = 113
 	ieMeshID = 114
 )
 
@@ -285,38 +302,4 @@ type ie struct {
 	ID uint8
 	// Length field implied by length of data
 	Data []byte
-}
-
-// parseIEs parses zero or more ies from a byte slice.
-// Reference:
-//   https://www.safaribooksonline.com/library/view/80211-wireless-networks/0596100523/ch04.html#wireless802dot112-CHP-4-FIG-31
-func parseIEs(b []byte) ([]ie, error) {
-	var ies []ie
-	var i int
-	for {
-		if len(b[i:]) == 0 {
-			break
-		}
-		if len(b[i:]) < 2 {
-			return nil, errInvalidIE
-		}
-
-		id := b[i]
-		i++
-		l := int(b[i])
-		i++
-
-		if len(b[i:]) < l {
-			return nil, errInvalidIE
-		}
-
-		ies = append(ies, ie{
-			ID:   id,
-			Data: b[i : i+l],
-		})
-
-		i += l
-	}
-
-	return ies, nil
 }
