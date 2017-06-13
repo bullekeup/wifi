@@ -271,7 +271,7 @@ func attrInterfaceFlags(flags *InterfaceFlags) (netlink.Attribute, error) {
 }
 
 func (c *client) InterfaceAdd(iftype InterfaceType, ifname string,
-	ifhwaddr []byte, flags *InterfaceFlags, dev WifiDevice) (*Interface, error) {
+	ifhwaddr net.HardwareAddr, flags *InterfaceFlags, dev WifiDevice) (*Interface, error) {
 
 	phy := dev.Phy()
 
@@ -301,7 +301,7 @@ func (c *client) InterfaceAdd(iftype InterfaceType, ifname string,
 	if len(ifhwaddr) == 6 {
 		attrs = append(attrs, netlink.Attribute{
 			Type : nl80211.AttrMac,
-			Data : ifhwaddr,
+			Data : []byte(ifhwaddr),
 		})
 	}
 

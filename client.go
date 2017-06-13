@@ -3,6 +3,7 @@ package wifi
 import (
 	"fmt"
 	"runtime"
+	"net"
 	"github.com/mdlayher/netlink"
 	"github.com/mdlayher/netlink/genetlink"
 )
@@ -63,7 +64,7 @@ func (c *Client) Phys() ([]*Wiphy, error) {
 }
 
 func (c *Client) InterfaceAdd(iftype InterfaceType, ifname string,
-	ifhwaddr []byte, flags *InterfaceFlags, dev WifiDevice) (*Interface, error) {
+	ifhwaddr net.HardwareAddr, flags *InterfaceFlags, dev WifiDevice) (*Interface, error) {
 	return c.c.InterfaceAdd(iftype, ifname, ifhwaddr, flags, dev)
 }
 
@@ -107,7 +108,7 @@ type osClient interface {
 	Scan(ifi *Interface) (*ScanResult, error)
 	Phys() ([]*Wiphy, error)
 	InterfaceAdd(iftype InterfaceType, ifname string,
-		ifhwaddr []byte, flags *InterfaceFlags, dev WifiDevice) (*Interface, error)
+		ifhwaddr net.HardwareAddr, flags *InterfaceFlags, dev WifiDevice) (*Interface, error)
 	InterfaceDel(ifi *Interface) error
 	InterfaceMeshJoin(ifi *Interface, minfos *MeshBasicInfo,
 		meshparams map[string]uint32) error
